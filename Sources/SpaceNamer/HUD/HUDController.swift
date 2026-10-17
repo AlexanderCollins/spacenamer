@@ -1,5 +1,4 @@
 import AppKit
-import CGSBridge
 import SpaceNamerCore
 
 /// A compact, click-through pill naming the Space you just arrived on. It appears at
@@ -69,15 +68,8 @@ final class HUDController {
         // drops back onto a desktop.
         panel.alphaValue = 0
         panel.orderFrontRegardless()
-        if let space = Self.overlaySpace {
-            SNMoveWindowToSpace(UInt32(panel.windowNumber), space)
-        }
+        OverlaySpace.adopt(panel)
     }
-
-    private static let overlaySpace: UInt64? = {
-        let space = SNCreateOverlaySpace(1)
-        return space == 0 ? nil : space
-    }()
 
     func show(
         title: String,

@@ -33,6 +33,11 @@ uint64_t SNCreateOverlaySpace(int32_t level);
 /// every desktop it was on.
 bool SNMoveWindowToSpace(uint32_t windowID, uint64_t space);
 
+/// Adds one of this app's windows to, or removes it from, a space (a desktop's managed ID
+/// or one from `SNCreateOverlaySpace`).
+bool SNAddWindowToSpace(uint32_t windowID, uint64_t space);
+bool SNRemoveWindowFromSpace(uint32_t windowID, uint64_t space);
+
 /// Gesture phases understood by the Dock.
 typedef CF_ENUM(int32_t, SNSwipePhase) {
     SNSwipePhaseBegan = 1,

@@ -43,6 +43,32 @@ enum DebugCommands {
             }
         case "/cgs-observe":
             SNDebugObserveNotifications(Int32(query["from"] ?? "0") ?? 0, Int32(query["to"] ?? "2000") ?? 2000)
+        case "/replay":
+            // Replays a recorded vertical swipe: file is JSON [[[ms, progress], ...,
+            // [velocity, "ended"|"cancelled"]], ...], index picks one swipe.
+            guard let path = query["file"], let index = query["index"].flatMap(Int.init),
+                  let data = FileManager.default.contents(atPath: path),
+                  let swipes = try? JSONSerialization.jsonObject(with: data) as? [[[Any]]],
+                  swipes.indices.contains(index)
+            else { return }
+            let swipe = swipes[index]
+            let samples = swipe.dropLast().compactMap { pair -> (Double, Double)? in
+                guard pair.count == 2, let t = pair[0] as? Double, let p = pair[1] as? Double else { return nil }
+                return (t, p)
+            }
+            let last = swipe.last ?? []
+            let velocity = last.first as? Double ?? 0
+            let cancelled = (last.last as? String) == "cancelled"
+            let options = SNSwipeOptions(rawValue: UInt32(query["options"] ?? "2") ?? 2)
+            let start = CACurrentMediaTime()
+            Task.detached {
+                for (offset, sample) in samples.enumerated() {
+                    let wait = start + sample.0 / 1000 - CACurrentMediaTime()
+                    if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1e9)) }
+                    let phase: SNSwipePhase = offset == 0 ? .began : (offset == samples.count - 1 ? (cancelled ? .cancelled : .ended) : .changed)
+                    SNPostDockSwipeWithOptions(phase, .vertical, sample.1, phase == .ended || phase == .cancelled ? velocity : 0, options)
+                }
+            }
         case "/gesture":
             // Streams a vertical three-finger swipe like a trackpad does (one update per
             // ~8 ms). path: comma-separated progress waypoints, each reached over `step` ms.

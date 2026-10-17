@@ -131,6 +131,28 @@ bool SNMoveWindowToSpace(uint32_t windowID, uint64_t space) {
     return true;
 }
 
+static bool SNChangeWindowSpace(uint32_t windowID, uint64_t space, SNWindowsSpacesFn change) {
+    SNEnsureLoaded();
+    if (space == 0 || sMainConnectionID == NULL || change == NULL) return false;
+    CFArrayRef windows = SNCreateNumberArray(kCFNumberSInt32Type, &windowID);
+    CFArrayRef spaces = SNCreateNumberArray(kCFNumberSInt64Type, &space);
+    bool ok = windows != NULL && spaces != NULL;
+    if (ok) change(sMainConnectionID(), windows, spaces);
+    if (windows) CFRelease(windows);
+    if (spaces) CFRelease(spaces);
+    return ok;
+}
+
+bool SNAddWindowToSpace(uint32_t windowID, uint64_t space) {
+    SNEnsureLoaded();
+    return SNChangeWindowSpace(windowID, space, sAddWindowsToSpaces);
+}
+
+bool SNRemoveWindowFromSpace(uint32_t windowID, uint64_t space) {
+    SNEnsureLoaded();
+    return SNChangeWindowSpace(windowID, space, sRemoveWindowsFromSpaces);
+}
+
 // Undocumented CGEvent fields the Dock reads from trackpad gesture events.
 enum {
     SNFieldGestureTag = 41,

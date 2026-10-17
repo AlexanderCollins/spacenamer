@@ -31,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             renameCurrentSpace: { [weak self] in self?.switcher.renameCurrentSpace() },
             showSettings: { [weak self] in self?.settings.show() },
             showHUD: { [weak self] space, early in self?.showHUD(for: space, early: early) },
+            switchStarted: { [weak self] space in self?.missionControl.switchStarted(to: space) },
             explainPermission: { [weak self] in self?.explainPermission() },
             explainMissingShortcuts: { [weak self] in self?.explainMissingShortcuts() }
         )
@@ -54,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Publishers.CombineLatest3(preferences.$showSwitchHUD, preferences.$showNamesInMissionControl, model.$hasAccess)
             .sink { [weak self] hud, names, access in
                 guard let self else { return }
-                predictor.isEnabled = hud && access
+                predictor.isEnabled = (hud || names) && access
                 // One tap serves both features; it only runs while one of them needs it.
                 input.setEnabled(access && (hud || names))
             }

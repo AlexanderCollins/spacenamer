@@ -77,6 +77,51 @@ enum DockMotion {
     private static func smoothstep(_ x: Double) -> Double { x * x * (3 - 2 * x) }
 }
 
+/// How the Dock finishes a three-finger swipe once it's let go: the bar springs the rest of
+/// the way in (or out, or back) from where the fingers left it, starting at a speed that
+/// grows with how fast they were moving. Fitted to the Dock's own reports over replays of
+/// real swipes, opening and closing, names-only and with previews (about 1.2 pt rms on
+/// the names-only bar). Works in fractions of the bar's height.
+struct DockFinish {
+    static let omega = 8.77
+    static let zeta = 0.767
+
+    /// Starting speed, in bar heights per second, for a swipe let go at `velocity`.
+    static func speed(forReleaseVelocity velocity: Double) -> Double {
+        2.0 + 1.53 * abs(velocity)
+    }
+
+    /// Host time it starts from.
+    let reference: CFTimeInterval
+    /// How much of the bar is left to go at the start (0...1).
+    let distance: Double
+    /// Speed toward the end at the start, in bar heights per second.
+    let speed: Double
+
+    /// How much is left to go at host time `time`; never past the end.
+    func remaining(at time: CFTimeInterval) -> Double {
+        let t = time - reference
+        guard t > 0 else { return distance }
+        let w = Self.omega, z = Self.zeta
+        let wd = w * (1 - z * z).squareRoot()
+        let r = exp(-z * w * t) * (distance * cos(wd * t) + (z * w * distance - speed) / wd * sin(wd * t))
+        return max(r, 0)
+    }
+
+    /// Speed toward the end at host time `time`, in bar heights per second.
+    func speed(at time: CFTimeInterval) -> Double {
+        let step = 0.002
+        return (remaining(at: time - step) - remaining(at: time + step)) / (2 * step)
+    }
+
+    /// Long enough to be within a hair of the end.
+    var duration: CFTimeInterval {
+        var t = 0.05
+        while t < 1.5, remaining(at: reference + t) > 0.002 || speed(at: reference + t) > 0.02 { t += 0.01 }
+        return t
+    }
+}
+
 /// A CSS/Core Animation style cubic Bézier easing from (0,0) to (1,1). Unlike
 /// `CAMediaTimingFunction`, control points may leave 0...1 in y, which the Dock's
 /// spring-like curves need; we sample it into keyframes instead.

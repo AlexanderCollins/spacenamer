@@ -158,14 +158,51 @@ final class MissionControlOverlay {
 
     private var isEnabled: Bool { model.preferences.showNamesInMissionControl && model.hasAccess }
 
-    /// Whether Mission Control is on screen (or on its way), names or not.
+    /// Whether Mission Control is on screen, or being swiped in, names or not.
     var isMissionControlUp: Bool {
-        if phase != .idle && phase != .armed { return true }
+        if interfaceShown || (phase == .opening && gesture != nil) { return true }
+        if phase != .idle && phase != .armed { return false }
         guard model.hasAccess, let dock = currentDock() else { return false }
-        var count: CFIndex = 0
+        // Not being watched (names in Mission Control are off): ask the Dock directly.
         let app = AXUIElementCreateApplication(dock.processIdentifier)
         AXUIElementSetMessagingTimeout(app, 0.05)
-        return AXUIElementGetAttributeValueCount(app, kAXChildrenAttribute as CFString, &count) == .success && count > 1
+        var value: AnyObject?
+        guard AXUIElementCopyAttributeValue(app, kAXChildrenAttribute as CFString, &value) == .success,
+              let children = value as? [AXUIElement], children.count > 1
+        else { return false }
+        return children.contains { child in
+            var identifier: AnyObject?
+            return AXUIElementCopyAttributeValue(child, kAXIdentifierAttribute as CFString, &identifier) == .success
+                && (identifier as? String) == "mc"
+        }
+    }
+
+    /// The Dock's Mission Control interface is on screen, as last read.
+    private var interfaceShown = false
+
+    /// A Space being switched to inside Mission Control. The Dock moves its highlight
+    /// there during the switch; macOS only reports the new current Space once it lands.
+    private var switchingTo: SpaceKey?
+    private var switchingWork: DispatchWorkItem?
+    /// When the Dock starts moving its highlight, after the switch begins.
+    private static let highlightDelay: TimeInterval = 0.04
+
+    func switchStarted(to space: Space) {
+        guard interfaceShown, [.opening, .open].contains(phase) else { return }
+        switchingWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            switchingTo = space.key
+            relabel()
+            // Should macOS never confirm it, go back to what it reports.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                guard let self, switchingTo == space.key else { return }
+                switchingTo = nil
+                relabel()
+            }
+        }
+        switchingWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.highlightDelay, execute: work)
     }
 
     // MARK: Lifecycle
@@ -320,23 +357,19 @@ final class MissionControlOverlay {
             }
             gesture = nil
             guard !current.reversing else { return }
-            // The Dock decides whether the swipe completes and animates the rest itself,
-            // publishing the bar's position as it goes, or leaves; follow that. Only if it
-            // never said where the bar is, finish on our own after a moment.
+            // The Dock springs the rest of the way from where the fingers left the bar.
+            // Play the same spring on the display's clock (the Dock's reports of it come at
+            // uneven moments, so following them alone runs a frame late now and then), and
+            // let those reports correct it.
             followsDock = true
             releaseFallback?.cancel()
-            if dockOffsets.isEmpty {
-                let commit = swipe.phase == .ended
-                let time = swipe.timestamp
-                let fallback = DispatchWorkItem { [weak self] in
-                    guard let self, dockOffsets.isEmpty else { return }
-                    finishGesture(direction, commit: commit, at: time)
-                }
-                releaseFallback = fallback
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: fallback)
-            } else {
-                followDock(dockOffsets, at: swipe.timestamp)
-            }
+            let commit = swipe.phase == .ended
+            startFinish(
+                opening: (direction == .opening) == commit,
+                from: currentFraction,
+                speed: DockFinish.speed(forReleaseVelocity: swipe.velocity),
+                at: swipe.timestamp
+            )
         case .other:
             break
         }
@@ -450,9 +483,11 @@ final class MissionControlOverlay {
     private func handle(_ event: SpacesBarReader.Event) {
         switch event {
         case .appeared(let time):
+            interfaceShown = true
             log.debug("interface appeared at \(time)")
             interfaceAppeared(at: time)
         case .gone(let time):
+            interfaceShown = false
             log.debug("interface gone at \(time)")
             dockOffsets.removeAll()
             if followsDock {
@@ -499,6 +534,10 @@ final class MissionControlOverlay {
         releaseFallback?.cancel()
         // Still under the fingers, which lead the reports.
         if let current = gesture, current.direction != nil, current.fingersTrusted { return }
+        if let finishing, gesture == nil {
+            correctFinish(finishing, with: offsets, at: time)
+            return
+        }
         var settledIn = true
         for (displayID, offset) in offsets {
             guard let window = windows[displayID] else { continue }
@@ -597,7 +636,7 @@ final class MissionControlOverlay {
         }
         for window in windows.values where !window.isVisible {
             window.canvas.setSlide(offset: -collapsedHeight(for: window), opacity: 0)
-            window.orderFrontRegardless()
+            window.show()
         }
         log.debug("session began: \(self.windows.count) windows, cache \(self.cache.count), visible \(self.windows.values.filter(\.isVisible).count)")
     }
@@ -679,13 +718,17 @@ final class MissionControlOverlay {
         reader.stop()
         for window in windows.values {
             window.orderOut(nil)
-            window.staysOnCurrentSpace = false
             window.canvas.setSlide(offset: -collapsedHeight(for: window), opacity: 0)
         }
         layouts.removeAll()
         elementSpaces.removeAll()
         mappedOrder.removeAll()
         expandStartedAt = nil
+        finishing = nil
+        finishEndWork?.cancel()
+        interfaceShown = false
+        switchingWork?.cancel()
+        switchingTo = nil
         dockOffsets.removeAll()
         closeEndsAt = 0
         reversalEndsAt = 0
@@ -716,29 +759,77 @@ final class MissionControlOverlay {
         }
     }
 
-    private func finishGesture(_ direction: Gesture.Direction, commit: Bool, at time: CFTimeInterval) {
-        let opening = (direction == .opening) == commit
-        let fraction = currentFraction
-        let remaining = opening ? 1 - fraction : fraction
-        let timing = DockMotion.Timing(
-            delay: 0,
-            duration: max(0.08, DockMotion.release.duration * max(remaining, 0.35)),
-            curve: DockMotion.release.curve
-        )
-        followsDock = false
-        for window in windows.values {
-            let height = opening ? collapsedHeight(for: window) : barHeight(for: window)
-            let from = window.canvas.presentedOffset
-            window.canvas.animateSlide(from: from, to: opening ? 0 : -height, timing: timing, reference: time) { progress in
-                DockMotion.openingOpacity(fraction + (opening ? 1 - fraction : -fraction) * progress)
-            }
+    /// A let-go swipe the Dock is finishing, as mirrored.
+    private struct Finishing {
+        var model: DockFinish
+        var opening: Bool
+        /// The last position the Dock reported for it, as a fraction of the bar in.
+        var reported: Double?
+    }
+
+    private var finishing: Finishing?
+    private var finishEndWork: DispatchWorkItem?
+    /// The Dock's frames show its reported position a little after it reports it.
+    private static let finishDisplayLag: CFTimeInterval = 0.009
+
+    private func finishHeight(_ id: CGDirectDisplayID, opening: Bool) -> CGFloat {
+        opening ? collapsedHeight(id) : (layouts[id]?.barFrame.height ?? collapsedHeight(id))
+    }
+
+    private func startFinish(opening: Bool, from fraction: Double, speed: Double, at time: CFTimeInterval, reported: Double? = nil) {
+        let fraction = min(max(fraction, 0), 1)
+        let model = DockFinish(reference: time, distance: opening ? 1 - fraction : fraction, speed: speed)
+        finishing = Finishing(model: model, opening: opening, reported: reported)
+        let duration = model.duration
+        let lag = Self.finishDisplayLag
+        func fractionIn(_ t: CFTimeInterval) -> Double {
+            let left = model.remaining(at: t - lag)
+            return opening ? 1 - left : left
         }
-        if opening {
-            phase = .opening
-        } else {
-            phase = .closing
-            closeEndsAt = time + timing.end
-            scheduleEnd(at: time + timing.end)
+        for (id, window) in windows {
+            let height = finishHeight(id, opening: opening)
+            window.canvas.animateSlide(
+                reference: time,
+                duration: duration + lag,
+                offset: { -CGFloat(1 - fractionIn($0)) * height },
+                opacity: { Float(DockMotion.openingOpacity(fractionIn($0))) }
+            )
+        }
+        phase = opening ? .opening : .closing
+        if !opening { closeEndsAt = time + duration }
+        finishEndWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let current = finishing, current.model.reference == model.reference else { return }
+            finishing = nil
+            followsDock = false
+            if opening { phase = .open } else { endSession() }
+        }
+        finishEndWork = work
+        // Closing ends when the Dock's interface goes; this is only in case that's missed.
+        let end = time + duration + lag + (opening ? 0 : 0.25)
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, end - CACurrentMediaTime()), execute: work)
+    }
+
+    /// Keeps the mirrored spring on the Dock's: re-anchored on the Dock's position if they
+    /// part, turned round if the Dock undoes the swipe instead.
+    private func correctFinish(_ current: Finishing, with offsets: [CGDirectDisplayID: CGFloat], at time: CFTimeInterval) {
+        guard let (id, offset) = offsets.first(where: { windows[$0.key] != nil }) else { return }
+        let height = finishHeight(id, opening: current.opening)
+        guard height > 0 else { return }
+        let reported = min(max(Double(1 + offset / height), 0), 1)
+        let left = current.model.remaining(at: time)
+        let expected = current.opening ? 1 - left : left
+        // Not tracking a gesture, the Dock may report where the bar will end up straight
+        // away; that isn't where it is.
+        let atEnd = current.opening ? reported > 0.999 : reported < 0.001
+        if atEnd, abs(expected - reported) > 0.05 { return }
+        let previous = current.reported
+        finishing?.reported = reported
+        // Moving the other way from the spring: it's undoing the swipe.
+        if let previous, (current.opening ? previous - reported : reported - previous) * Double(height) > 1 {
+            startFinish(opening: !current.opening, from: reported, speed: abs(reported - previous) / 0.008, at: time, reported: reported)
+        } else if abs(expected - reported) * Double(height) > 1.5 {
+            startFinish(opening: current.opening, from: reported, speed: max(0, current.model.speed(at: time)), at: time, reported: reported)
         }
     }
 
@@ -773,6 +864,10 @@ final class MissionControlOverlay {
     /// Re-derives names for the current layouts (renames, reorders, a new current Space).
     private func relabel() {
         guard phase != .idle else { return }
+        // The switch has landed; what macOS reports is right again.
+        if let switchingTo, model.snapshot.displays.contains(where: { $0.current?.key == switchingTo }) {
+            self.switchingTo = nil
+        }
         // Pinned to the current Space only for a desktop click's zoom; if the Space changes
         // inside Mission Control instead, the names have to come along.
         if predictedExit == nil { keepOnEverySpace() }
@@ -809,7 +904,7 @@ final class MissionControlOverlay {
             targets.append(OverlayCanvas.Target(
                 key: space.key,
                 name: name,
-                isCurrent: space.managedID == display.currentManagedID,
+                isCurrent: switchingTo.map { $0 == space.key } ?? (space.managedID == display.currentManagedID),
                 geometry: geometries[index],
                 maxWidth: widths[index]
             ))
@@ -892,7 +987,9 @@ final class MissionControlOverlay {
             if case .desktop(let display, _, _, false) = target, [.open, .opening].contains(phase) {
                 // Clicking this would zoom another desktop up over the bar; be under it
                 // before it starts.
-                windows[display]?.staysOnCurrentSpace = true
+                if let desktop = displaySpaces(for: display)?.currentManagedID {
+                    windows[display]?.lend(toDesktop: desktop)
+                }
             }
         case .leftMouseDragged:
             guard draggedElement == nil, let start = pressLocation,
@@ -901,7 +998,7 @@ final class MissionControlOverlay {
             else { return }
             // Picked up a thumbnail; the Dock hides its name while it's held.
             draggedElement = element
-            windows[display]?.staysOnCurrentSpace = false
+            windows[display]?.returnFromDesktop()
             if let layout = layouts[display] { render(layout, transition: nil, fadeNew: true) }
         case .leftMouseUp:
             let start = pressLocation
@@ -988,7 +1085,7 @@ final class MissionControlOverlay {
     }
 
     private func keepOnEverySpace() {
-        windows.values.forEach { $0.staysOnCurrentSpace = false }
+        windows.values.filter { $0.lentTo != nil }.forEach { $0.returnFromDesktop() }
     }
 
     private func restoreAfterMissedExit() {
@@ -999,7 +1096,7 @@ final class MissionControlOverlay {
         phase = .open
         keepOnEverySpace()
         for window in windows.values {
-            if !window.isVisible { window.orderFrontRegardless() }
+            if !window.isVisible { window.show() } else if window.lentTo != nil { window.returnFromDesktop() }
             window.canvas.setSlide(offset: 0, opacity: window.canvas.presentedOpacity)
             window.canvas.fadeSlide(to: 1, duration: DockMotion.lateFade)
         }

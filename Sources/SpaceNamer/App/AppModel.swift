@@ -12,6 +12,8 @@ final class AppModel: ObservableObject {
         var showSettings: () -> Void = {}
         /// `early` is true when shown at the start of a switch macOS is still animating.
         var showHUD: (Space, _ early: Bool) -> Void = { _, _ in }
+        /// A switch to this Space has just started (macOS reports it once it lands).
+        var switchStarted: (Space) -> Void = { _ in }
         var explainPermission: () -> Void = {}
         var explainMissingShortcuts: () -> Void = {}
     }
@@ -335,7 +337,7 @@ final class AppModel: ObservableObject {
 
     /// Called when a switch starts that macOS will report only once its animation ends.
     func predictSwitch(_ move: SwitchPredictor.Move) {
-        guard preferences.showSwitchHUD, !navigator.isJumping else { return }
+        guard !navigator.isJumping else { return }
         let cursorDisplay = snapshot.displays.first { DisplayResolver.isCursor(onDisplay: $0.id) }
         guard let display = cursorDisplay ?? snapshot.activeDisplay, let current = display.current else { return }
 
@@ -348,7 +350,8 @@ final class AppModel: ObservableObject {
             target = snapshot.space(atPosition: position)
         }
         guard let target, target.key != current.key else { return }
-        actions.showHUD(target, true)
+        actions.switchStarted(target)
+        if preferences.showSwitchHUD { actions.showHUD(target, true) }
     }
 
     var swipeSign: Int { navigator.swipeSign }

@@ -101,16 +101,30 @@ final class OverlayWindow: NSPanel {
     private static let everySpace: NSWindow.CollectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
     private static let currentSpaceOnly: NSWindow.CollectionBehavior = [.moveToActiveSpace, .stationary, .fullScreenAuxiliary, .ignoresCycle]
 
+    /// The desktop the window is lent to, if any (see `lend(toDesktop:)`).
+    private(set) var lentTo: UInt64?
+
+    /// Shows the window above the desktops, where Space switches inside Mission Control
+    /// slide past it rather than carrying it along.
+    func show() {
+        orderFrontRegardless()
+        returnFromDesktop()
+    }
+
     /// When a desktop is clicked in Mission Control, the window server zooms that
-    /// desktop's windows up over the bar, and a window on every Space is one of them.
-    /// Kept to the current Space instead, the zoom covers it just as it covers the
-    /// Dock's own labels.
-    var staysOnCurrentSpace: Bool {
-        get { collectionBehavior.contains(.moveToActiveSpace) }
-        set {
-            guard newValue != staysOnCurrentSpace else { return }
-            collectionBehavior = newValue ? Self.currentSpaceOnly : Self.everySpace
-        }
+    /// desktop's windows up over the bar. Lent to the current desktop for that moment,
+    /// the zoom covers the names just as it covers the Dock's own labels.
+    func lend(toDesktop desktop: UInt64) {
+        guard lentTo != desktop else { return }
+        collectionBehavior = Self.currentSpaceOnly
+        OverlaySpace.lend(self, toDesktop: desktop)
+        lentTo = desktop
+    }
+
+    func returnFromDesktop() {
+        collectionBehavior = Self.everySpace
+        OverlaySpace.adopt(self)
+        lentTo = nil
     }
 }
 
@@ -192,6 +206,31 @@ final class OverlayCanvas {
         fade.duration = move.duration
         fade.beginTime = move.beginTime
         fade.fillMode = .both
+        slide.add(move, forKey: "slide")
+        slide.add(fade, forKey: "fade")
+    }
+
+    /// Slides along any path: `offset` and `opacity` give the values at each host time
+    /// from `reference` to `reference + duration`, sampled into keyframes.
+    func animateSlide(reference: CFTimeInterval, duration: CFTimeInterval, offset: (CFTimeInterval) -> CGFloat, opacity: (CFTimeInterval) -> Float) {
+        let samples = max(8, Int(duration * 120))
+        let times = (0...samples).map { reference + duration * Double($0) / Double(samples) }
+        withoutAnimation {
+            slide.setValue(offset(times.last!), forKeyPath: "transform.translation.y")
+            slide.opacity = opacity(times.last!)
+        }
+        let keyTimes = (0...samples).map { NSNumber(value: Double($0) / Double(samples)) }
+        let move = CAKeyframeAnimation(keyPath: "transform.translation.y")
+        move.values = times.map { NSNumber(value: Double(offset($0))) }
+        let fade = CAKeyframeAnimation(keyPath: "opacity")
+        fade.values = times.map { NSNumber(value: opacity($0)) }
+        for animation in [move, fade] {
+            animation.keyTimes = keyTimes
+            animation.calculationMode = .linear
+            animation.duration = duration
+            animation.beginTime = slide.convertTime(reference, from: nil)
+            animation.fillMode = .both
+        }
         slide.add(move, forKey: "slide")
         slide.add(fade, forKey: "fade")
     }
@@ -362,6 +401,9 @@ final class NameLabelLayer: CALayer {
 
     /// `width` is the pill's width on screen; the text is drawn at full size and scaled
     /// by `textScale`, so the room it gets is measured before scaling.
+    /// How long the current-Space highlight takes to move, as the Dock's does.
+    static let highlightFade: CFTimeInterval = 0.1
+
     func setContent(name: String, isCurrent: Bool, width: CGFloat, textScale: CGFloat) {
         let room = max(10, width / max(textScale, 0.1) - 2 * OverlayCanvas.padding + 2)
         if name != labelName || room != textRoom {
@@ -373,7 +415,21 @@ final class NameLabelLayer: CALayer {
         }
         if isCurrent != self.isCurrent {
             self.isCurrent = isCurrent
+            let from = presentation()?.backgroundColor ?? backgroundColor
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
             backgroundColor = isCurrent ? labelStyle.currentFill : labelStyle.fill
+            CATransaction.commit()
+            // Cross-fade like the Dock's highlight when the current Space changes; a pill
+            // that isn't on screen yet just takes its colour.
+            if superlayer != nil, let from {
+                let fade = CABasicAnimation(keyPath: "backgroundColor")
+                fade.fromValue = from
+                fade.toValue = backgroundColor
+                fade.duration = Self.highlightFade
+                fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                add(fade, forKey: "highlight")
+            }
         }
     }
 
