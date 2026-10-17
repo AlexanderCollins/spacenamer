@@ -132,6 +132,7 @@ Then remove SpaceNamer from **System Settings → Privacy & Security → Accessi
 make debug   # debug build for this Mac's architecture
 make test    # unit tests (swift-testing; works with the Command Line Tools alone)
 make clean
+swift scripts/make-icon.swift   # redraws Resources/AppIcon.icns
 ```
 
 The code is split into `Sources/CGSBridge` (the small C layer that talks to the window server),
