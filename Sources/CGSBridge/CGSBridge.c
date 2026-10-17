@@ -4,9 +4,6 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <string.h>
-#include <stdio.h>
-#include <os/log.h>
-#include <mach/mach_time.h>
 
 typedef int32_t SNConnectionID;
 
@@ -165,6 +162,7 @@ enum {
     SNFieldGesturePhase = 132,
     SNFieldSwipePhase = 134,
     SNFieldSwipeProgressBits = 135,
+    SNFieldSwipeInverted = 136,
     SNFieldSwipeMotionAlt = 165,
 };
 
@@ -176,14 +174,10 @@ enum {
 };
 
 bool SNPostDockSwipe(SNSwipePhase phase, double progress, double velocity) {
-    return SNPostDockSwipeWithMotion(phase, SNSwipeMotionHorizontal, progress, velocity);
+    return SNPostDockSwipeWithMotion(phase, SNSwipeMotionHorizontal, progress, velocity, false);
 }
 
-bool SNPostDockSwipeWithMotion(SNSwipePhase phase, SNSwipeMotion motion, double progress, double velocity) {
-    return SNPostDockSwipeWithOptions(phase, motion, progress, velocity, 0);
-}
-
-bool SNPostDockSwipeWithOptions(SNSwipePhase phase, SNSwipeMotion motion, double progress, double velocity, SNSwipeOptions options) {
+bool SNPostDockSwipeWithMotion(SNSwipePhase phase, SNSwipeMotion motion, double progress, double velocity, bool inverted) {
     CGEventRef gesture = CGEventCreate(NULL);
     CGEventRef swipe = CGEventCreate(NULL);
     if (gesture == NULL || swipe == NULL) {
@@ -213,21 +207,10 @@ bool SNPostDockSwipeWithOptions(SNSwipePhase phase, SNSwipeMotion motion, double
         CGEventSetDoubleValueField(swipe, SNFieldSwipeVelocityX, velocity);
         CGEventSetDoubleValueField(swipe, SNFieldSwipeVelocityY, motion == SNSwipeMotionVertical ? velocity : 0);
     }
-    if (options & SNSwipeOptionInverted) CGEventSetDoubleValueField(swipe, 136, 1);
-    if (options & SNSwipeOptionScrollField) CGEventSetDoubleValueField(swipe, 119, progress);
-    if (options & SNSwipeOptionGestureHIDType) {
-        CGEventSetDoubleValueField(gesture, SNFieldHIDType, SNHIDTypeDockSwipe);
-        CGEventSetDoubleValueField(gesture, SNFieldGesturePhase, phase);
-    }
+    if (inverted) CGEventSetDoubleValueField(swipe, SNFieldSwipeInverted, 1);
 
-    CGEventTapLocation tap = (options & SNSwipeOptionHIDTap) ? kCGHIDEventTap : kCGSessionEventTap;
-    if (options & SNSwipeOptionGestureFirst) {
-        if (!(options & SNSwipeOptionNoGesture)) CGEventPost(tap, gesture);
-        CGEventPost(tap, swipe);
-    } else {
-        CGEventPost(tap, swipe);
-        if (!(options & SNSwipeOptionNoGesture)) CGEventPost(tap, gesture);
-    }
+    CGEventPost(kCGSessionEventTap, swipe);
+    CGEventPost(kCGSessionEventTap, gesture);
     CFRelease(swipe);
     CFRelease(gesture);
     return true;
@@ -250,6 +233,11 @@ bool SNObserveWindowServerEvent(SNWindowServerEvent event, SNWindowServerEventHa
 }
 
 // MARK: Development
+
+#if DEBUG
+#include <stdio.h>
+#include <os/log.h>
+#include <mach/mach_time.h>
 
 typedef int32_t (*SNRegisterConnectionNotifyProcFn)(SNConnectionID, SNNotifyProc proc, int32_t type, void *context);
 
@@ -283,3 +271,4 @@ void SNDebugObserveNotifications(int32_t from, int32_t to) {
         if (connection && sMainConnectionID) connection(sMainConnectionID(), SNDebugNotify, type, (void *)1);
     }
 }
+#endif

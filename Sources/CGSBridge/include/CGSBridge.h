@@ -57,18 +57,8 @@ typedef CF_ENUM(int32_t, SNSwipeMotion) {
 /// is measured in Space widths; `velocity` only matters on the final (ended) frame and
 /// controls how fast the Dock finishes the transition. Requires Accessibility access.
 bool SNPostDockSwipe(SNSwipePhase phase, double progress, double velocity);
-bool SNPostDockSwipeWithMotion(SNSwipePhase phase, SNSwipeMotion motion, double progress, double velocity);
-
-/// Variations used while working out which fields the Dock requires.
-typedef CF_OPTIONS(uint32_t, SNSwipeOptions) {
-    SNSwipeOptionHIDTap = 1 << 0,
-    SNSwipeOptionInverted = 1 << 1,
-    SNSwipeOptionScrollField = 1 << 2,
-    SNSwipeOptionGestureHIDType = 1 << 3,
-    SNSwipeOptionGestureFirst = 1 << 4,
-    SNSwipeOptionNoGesture = 1 << 5,
-};
-bool SNPostDockSwipeWithOptions(SNSwipePhase phase, SNSwipeMotion motion, double progress, double velocity, SNSwipeOptions options);
+/// The same in either direction. `inverted` sets the swipe's direction-inverted field.
+bool SNPostDockSwipeWithMotion(SNSwipePhase phase, SNSwipeMotion motion, double progress, double velocity, bool inverted);
 
 /// Window server events of interest. These arrive without any polling.
 typedef CF_ENUM(int32_t, SNWindowServerEvent) {
@@ -84,7 +74,7 @@ typedef void (*SNWindowServerEventHandler)(SNWindowServerEvent event);
 /// window server doesn't offer it.
 bool SNObserveWindowServerEvent(SNWindowServerEvent event, SNWindowServerEventHandler handler);
 
-/// Development aid: logs every window server notification in [from, to) with its host time.
+/// Debug builds only: logs every window server notification in [from, to) with its host time.
 void SNDebugObserveNotifications(int32_t from, int32_t to);
 
 CF_ASSUME_NONNULL_END

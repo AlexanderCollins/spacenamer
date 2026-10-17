@@ -29,23 +29,12 @@ enum DebugCommands {
                     if gap > 0, index < count - 1 { try? await Task.sleep(nanoseconds: gap * 1_000_000) }
                 }
             }
-        case "/vswipe":
-            // Opens Mission Control in steps by holding a vertical swipe at each progress.
-            let steps = (query["steps"] ?? "-0.2,-0.4,-0.6,-0.8,-1.0").split(separator: ",").compactMap { Double($0) }
-            let hold = UInt64(query["hold"] ?? "350") ?? 350
-            Task {
-                SNPostDockSwipeWithMotion(.began, .vertical, 0, 0)
-                for step in steps {
-                    SNPostDockSwipeWithMotion(.changed, .vertical, step, 0)
-                    try? await Task.sleep(nanoseconds: hold * 1_000_000)
-                }
-                SNPostDockSwipeWithMotion(.ended, .vertical, steps.last ?? -1, Double(query["velocity"] ?? "-2.5") ?? -2.5)
-            }
         case "/cgs-observe":
             SNDebugObserveNotifications(Int32(query["from"] ?? "0") ?? 0, Int32(query["to"] ?? "2000") ?? 2000)
         case "/replay":
             // Replays a recorded vertical swipe: file is JSON [[[ms, progress], ...,
-            // [velocity, "ended"|"cancelled"]], ...], index picks one swipe.
+            // [velocity, "ended"|"cancelled"]], ...], index picks one swipe. inverted=0
+            // leaves the swipe's direction-inverted field unset (as for /gesture).
             guard let path = query["file"], let index = query["index"].flatMap(Int.init),
                   let data = FileManager.default.contents(atPath: path),
                   let swipes = try? JSONSerialization.jsonObject(with: data) as? [[[Any]]],
@@ -59,14 +48,14 @@ enum DebugCommands {
             let last = swipe.last ?? []
             let velocity = last.first as? Double ?? 0
             let cancelled = (last.last as? String) == "cancelled"
-            let options = SNSwipeOptions(rawValue: UInt32(query["options"] ?? "2") ?? 2)
+            let inverted = query["inverted"] != "0"
             let start = CACurrentMediaTime()
             Task.detached {
                 for (offset, sample) in samples.enumerated() {
                     let wait = start + sample.0 / 1000 - CACurrentMediaTime()
                     if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1e9)) }
                     let phase: SNSwipePhase = offset == 0 ? .began : (offset == samples.count - 1 ? (cancelled ? .cancelled : .ended) : .changed)
-                    SNPostDockSwipeWithOptions(phase, .vertical, sample.1, phase == .ended || phase == .cancelled ? velocity : 0, options)
+                    SNPostDockSwipeWithMotion(phase, .vertical, sample.1, phase == .ended || phase == .cancelled ? velocity : 0, inverted)
                 }
             }
         case "/gesture":
@@ -76,9 +65,9 @@ enum DebugCommands {
             let stepMs = Double(query["step"] ?? "300") ?? 300
             let velocity = Double(query["velocity"] ?? "-2.5") ?? -2.5
             let motion: SNSwipeMotion = query["motion"] == "h" ? .horizontal : .vertical
-            let options = SNSwipeOptions(rawValue: UInt32(query["options"] ?? "0") ?? 0)
+            let inverted = query["inverted"] != "0"
             Task {
-                SNPostDockSwipeWithOptions(.began, motion, path.first ?? 0, 0, options)
+                SNPostDockSwipeWithMotion(.began, motion, path.first ?? 0, 0, inverted)
                 var current = path.first ?? 0
                 let durations = (query["steps"] ?? "").split(separator: ",").compactMap { Double($0) }
                 for (index, target) in path.dropFirst().enumerated() {
@@ -88,11 +77,11 @@ enum DebugCommands {
                     for frame in 1...frames {
                         try? await Task.sleep(nanoseconds: 8_000_000)
                         current = start + (target - start) * Double(frame) / Double(frames)
-                        SNPostDockSwipeWithOptions(.changed, motion, current, 0, options)
+                        SNPostDockSwipeWithMotion(.changed, motion, current, 0, inverted)
                     }
                 }
                 try? await Task.sleep(nanoseconds: 8_000_000)
-                SNPostDockSwipeWithOptions(query["end"] == "cancel" ? .cancelled : .ended, motion, current, velocity, options)
+                SNPostDockSwipeWithMotion(query["end"] == "cancel" ? .cancelled : .ended, motion, current, velocity, inverted)
             }
         case "/reorder":
             // Closed-loop drag in Mission Control: picks up the thumbnail at `from` (1-based)
@@ -156,7 +145,7 @@ enum DebugCommands {
                     return value as? [AXUIElement] ?? []
                 }
                 while CACurrentMediaTime() - start < duration {
-                    let first = DebugCommands.firstSpaceButtonNonisolated(app)
+                    let first = DebugCommands.firstSpaceButton(app)
                     var list: AnyObject?, bar: AnyObject?
                     if let first { AXUIElementCopyAttributeValue(first, kAXParentAttribute as CFString, &list) }
                     if let list { AXUIElementCopyAttributeValue(list as! AXUIElement, kAXParentAttribute as CFString, &bar) }
@@ -218,73 +207,6 @@ enum DebugCommands {
             if let shortcut = SymbolicHotKeys.moveSpace(direction: direction) { EventSynth.press(shortcut) }
         case "/dock-ax":
             write(dumpDock(maxDepth: Int(query["depth"] ?? "8") ?? 8), to: output)
-        case "/mission-control":
-            startObservingDock(log: output + ".notifications")
-            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Mission Control.app"))
-            let delay = Double(query["delay"] ?? "1.2") ?? 1.2
-            let original = DisplayResolver.cursorLocation()
-            if let hoverY = query["hoverY"].flatMap(Double.init) {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                    for step in 0..<6 {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + Double(step) * 0.05) {
-                            let point = CGPoint(x: 900 + Double(step) * 4, y: hoverY)
-                            CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
-                        }
-                    }
-                }
-            }
-            if let leaveAt = query["leaveAt"].flatMap(Double.init) {
-                DispatchQueue.main.asyncAfter(deadline: .now() + leaveAt) {
-                    for step in 0..<6 {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + Double(step) * 0.03) {
-                            let point = CGPoint(x: 900, y: 300 + Double(step) * 60)
-                            CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
-                        }
-                    }
-                }
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                if let original, query["hoverY"] != nil {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { CGWarpMouseCursorPosition(original) }
-                }
-                write(dumpDock(maxDepth: Int(query["depth"] ?? "8") ?? 8), to: output)
-                if query["stay"] == nil {
-                    NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Mission Control.app"))
-                }
-            }
-        case "/mc-timing":
-            // Poll the Dock's AX tree every 4 ms after opening Mission Control and log
-            // when the Mission Control group first appears.
-            guard let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else { return }
-            let app = AXUIElementCreateApplication(dock.processIdentifier)
-            let started = Date()
-            var lines: [String] = []
-            var seen = false
-            func stamp() -> String { String(format: "%.0fms", Date().timeIntervalSince(started) * 1000) }
-            let formatter = DateFormatter()
-            formatter.dateFormat = "HH:mm:ss.SSS"
-            lines.append("start wall \(formatter.string(from: started))")
-            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Mission Control.app"))
-            lines.append("\(stamp()) open requested")
-            Task {
-                for _ in 0..<200 {
-                    var value: AnyObject?
-                    AXUIElementCopyAttributeValue(app, kAXChildrenAttribute as CFString, &value)
-                    let children = value as? [AXUIElement] ?? []
-                    let hasMC = children.contains { child in
-                        var id: AnyObject?
-                        AXUIElementCopyAttributeValue(child, kAXIdentifierAttribute as CFString, &id)
-                        return (id as? String) == "mc"
-                    }
-                    if hasMC != seen {
-                        seen = hasMC
-                        lines.append("\(stamp()) mc group \(hasMC ? "appeared" : "gone")")
-                    }
-                    try? await Task.sleep(nanoseconds: 4_000_000)
-                }
-                NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Mission Control.app"))
-                write(lines.joined(separator: "\n"), to: output)
-            }
         case "/mc-sequence":
             // Drives Mission Control on a schedule and logs, on the host clock, when the
             // Dock's AX state changes. steps: action@seconds, comma separated.
@@ -388,26 +310,7 @@ enum DebugCommands {
         }
     }
 
-    nonisolated static func firstSpaceButtonNonisolated(_ app: AXUIElement) -> AXUIElement? {
-        func children(_ element: AXUIElement) -> [AXUIElement] {
-            var value: AnyObject?
-            AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value)
-            return value as? [AXUIElement] ?? []
-        }
-        func identifier(_ element: AXUIElement) -> String? {
-            var value: AnyObject?
-            AXUIElementCopyAttributeValue(element, kAXIdentifierAttribute as CFString, &value)
-            return value as? String
-        }
-        guard let mc = children(app).first(where: { identifier($0) == "mc" }),
-              let display = children(mc).first(where: { identifier($0) == "mc.display" }),
-              let bar = children(display).first(where: { identifier($0) == "mc.spaces" }),
-              let list = children(bar).first(where: { identifier($0) == "mc.spaces.list" })
-        else { return nil }
-        return children(list).first
-    }
-
-    private static func firstSpaceButton(_ app: AXUIElement) -> AXUIElement? {
+    nonisolated private static func firstSpaceButton(_ app: AXUIElement) -> AXUIElement? {
         func children(_ element: AXUIElement) -> [AXUIElement] {
             var value: AnyObject?
             AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value)
@@ -480,37 +383,6 @@ enum DebugCommands {
             post(.leftMouseUp, point)
             log.append("gave up; released at x=\(Int(point.x))")
         }
-    }
-
-    private static var observer: AXObserver?
-    private static var notificationLog: String = ""
-    private static var notificationLogPath = ""
-    private static let start = Date()
-
-    private static func startObservingDock(log path: String) {
-        guard observer == nil,
-              let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else { return }
-        notificationLogPath = path
-        var created: AXObserver?
-        let callback: AXObserverCallback = { _, element, notification, _ in
-            var role: AnyObject?
-            AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
-            let line = String(format: "%.0fms ", Date().timeIntervalSince(DebugCommands.start) * 1000) + "\(notification) role=\(role as? String ?? "?")\n"
-            MainActor.assumeIsolated {
-                DebugCommands.notificationLog += line
-                try? DebugCommands.notificationLog.write(toFile: DebugCommands.notificationLogPath, atomically: true, encoding: .utf8)
-            }
-        }
-        guard AXObserverCreate(dock.processIdentifier, callback, &created) == .success, let created else { return }
-        let app = AXUIElementCreateApplication(dock.processIdentifier)
-        for name in ["AXExposeShowAllWindows", "AXExposeShowFrontWindows", "AXExposeShowDesktop", "AXExposeExit",
-                     kAXUIElementDestroyedNotification, kAXCreatedNotification, kAXFocusedUIElementChangedNotification,
-                     kAXWindowCreatedNotification, kAXLayoutChangedNotification, kAXSelectedChildrenChangedNotification] {
-            let status = AXObserverAddNotification(created, app, name as CFString, nil)
-            notificationLog += "subscribe \(name): \(status.rawValue)\n"
-        }
-        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(created), .defaultMode)
-        observer = created
     }
 
     private static func write(_ text: String, to path: String) {

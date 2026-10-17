@@ -98,15 +98,11 @@ final class MissionControlOverlay {
     private var followsDock = false {
         didSet { if followsDock != oldValue { reader.setFast(followsDock || gesture != nil) } }
     }
-    private var releaseFallback: DispatchWorkItem?
     private var observer: AXObserver?
     private var dock: NSRunningApplication?
     private var armTimeoutWork: DispatchWorkItem?
     private var endWork: DispatchWorkItem?
     private var snapshotTimer: Timer?
-    private var hotCornerTimer: Timer?
-    private var hotCorners: [String] = []
-    private var cornerLatched = false
     /// Which Space each of the Dock's thumbnail elements stands for, per display. Built
     /// from the Space order, then kept by element so names stay with their thumbnails
     /// while one is dragged to a new place (the Dock renumbers titles by position).
@@ -141,7 +137,6 @@ final class MissionControlOverlay {
 
     /// A click we expect to close Mission Control; cleared once the Dock confirms.
     private var predictedExit: DispatchWorkItem?
-    private var launcherObservation: NSKeyValueObservation?
     private var mouseTap: CFMachPort?
     private var mouseTapSource: CFRunLoopSource?
     private var missionControlKeys: [(keyCode: Int64, modifiers: UInt64)] = []
@@ -224,26 +219,12 @@ final class MissionControlOverlay {
         center.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] note in
             let bundleID = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
             MainActor.assumeIsolated {
-                guard let self else { return }
-                switch bundleID {
-                case "com.apple.exposelauncher":
-                    self.arm(.interface)
-                case "com.apple.dock":
-                    // The Dock restarted: anything on screen is stale.
-                    self.endSession()
-                    self.detach()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.attachIfPossible() }
-                default:
-                    break
-                }
+                guard let self, bundleID == "com.apple.dock" else { return }
+                // The Dock restarted: anything on screen is stale.
+                self.endSession()
+                self.detach()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.attachIfPossible() }
             }
-        }
-        // Mission Control.app (Dock icon, Launchpad, Spotlight) is background-only, so it
-        // never shows up in launch notifications; watch the running list instead.
-        launcherObservation = NSWorkspace.shared.observe(\.runningApplications, options: [.new]) { [weak self] _, change in
-            let launched = (change.newValue ?? []).contains { $0.bundleIdentifier == "com.apple.exposelauncher" }
-            guard launched else { return }
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.arm(.interface) } }
         }
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -266,12 +247,9 @@ final class MissionControlOverlay {
                 if enabled {
                     attachIfPossible()
                     rebuildWindows()
-                    reloadHotCorners()
                 } else {
                     endSession()
                     detach()
-                    hotCornerTimer?.invalidate()
-                    hotCornerTimer = nil
                 }
             }
             .store(in: &cancellables)
@@ -362,7 +340,6 @@ final class MissionControlOverlay {
             // uneven moments, so following them alone runs a frame late now and then), and
             // let those reports correct it.
             followsDock = true
-            releaseFallback?.cancel()
             let commit = swipe.phase == .ended
             startFinish(
                 opening: (direction == .opening) == commit,
@@ -494,7 +471,6 @@ final class MissionControlOverlay {
                 // A released swipe closed Mission Control or sprang back; the Dock has
                 // already been moving the bar, so finish from where it is.
                 followsDock = false
-                releaseFallback?.cancel()
                 if windows.values.allSatisfy({ $0.canvas.presentedOffset <= -0.9 * barHeight(for: $0) }) {
                     endSession()
                 } else {
@@ -531,7 +507,6 @@ final class MissionControlOverlay {
     /// the Dock itself steps the bar irregularly here, so copying beats smoothing.
     private func followDock(_ offsets: [CGDirectDisplayID: CGFloat], at time: CFTimeInterval) {
         guard followsDock, gesture?.reversing != true, time >= reversalEndsAt else { return }
-        releaseFallback?.cancel()
         // Still under the fingers, which lead the reports.
         if let current = gesture, current.direction != nil, current.fingersTrusted { return }
         if let finishing, gesture == nil {
@@ -600,7 +575,6 @@ final class MissionControlOverlay {
         predictedExit?.cancel()
         predictedExit = nil
         armTimeoutWork?.cancel()
-        releaseFallback?.cancel()
         followsDock = false
         keepOnEverySpace()
         reader.start(dockPID: dock.processIdentifier)
@@ -669,7 +643,6 @@ final class MissionControlOverlay {
         guard phase != .closing else { return }
         phase = .closing
         followsDock = false
-        releaseFallback?.cancel()
         let expanded = layouts.values.contains { !Self.isCollapsed($0) }
         let grown = expandStartedAt.map { (reference - $0 - DockMotion.expand.delay) / DockMotion.expand.duration } ?? 1
         var timing = expanded ? DockMotion.closeExpanded : DockMotion.closeCollapsed
@@ -738,7 +711,6 @@ final class MissionControlOverlay {
         stopWatchingMouse()
         gesture = nil
         followsDock = false
-        releaseFallback?.cancel()
         openSource = nil
         phase = .idle
     }
@@ -1179,41 +1151,5 @@ final class MissionControlOverlay {
         timer.tolerance = 0.02
         RunLoop.main.add(timer, forMode: .common)
         snapshotTimer = timer
-    }
-
-    // MARK: Hot corners
-
-    /// Watches the pointer (cheaply, 15 times a second) only when a hot corner opens
-    /// Mission Control, so those opens can be animated from their very start too.
-    private func reloadHotCorners() {
-        let dockDefaults = UserDefaults(suiteName: "com.apple.dock")
-        hotCorners = ["tl", "tr", "bl", "br"].filter { dockDefaults?.integer(forKey: "wvous-\($0)-corner") == 2 }
-        hotCornerTimer?.invalidate()
-        hotCornerTimer = nil
-        guard !hotCorners.isEmpty else { return }
-        let timer = Timer(timeInterval: 1.0 / 15, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.checkHotCorners() }
-        }
-        timer.tolerance = 0.02
-        RunLoop.main.add(timer, forMode: .common)
-        hotCornerTimer = timer
-    }
-
-    private func checkHotCorners() {
-        let point = NSEvent.mouseLocation
-        let inCorner = NSScreen.screens.contains { screen in
-            let frame = screen.frame
-            return hotCorners.contains { corner in
-                let x = corner.hasSuffix("l") ? frame.minX : frame.maxX - 1
-                let y = corner.hasPrefix("b") ? frame.minY : frame.maxY - 1
-                return abs(point.x - x) <= 2 && abs(point.y - y) <= 2
-            }
-        }
-        if inCorner, !cornerLatched {
-            cornerLatched = true
-            arm(.interface)
-        } else if !inCorner {
-            cornerLatched = false
-        }
     }
 }

@@ -54,8 +54,6 @@ enum DockMotion {
     static let addY = Timing(delay: 0.0133, duration: 0.2523, curve: CubicBezier(0.414, 0.011, 0.492, 1.032))
     /// A desktop removed: the others close the gap. Fit within 1.0 pt rms.
     static let remove = Timing(delay: 0.0039, duration: 0.2682, curve: CubicBezier(0.341, 0.001, 0.270, 0.990))
-    /// Finishing an open or close after the fingers lift mid-gesture.
-    static let release = Timing(delay: 0, duration: 0.22, curve: CubicBezier(0.2, 0.6, 0.35, 1.0))
     /// Used when we only learn about Mission Control once it has finished opening.
     static let lateFade: CFTimeInterval = 0.16
 
