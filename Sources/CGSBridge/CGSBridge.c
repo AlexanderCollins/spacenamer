@@ -4,6 +4,9 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <string.h>
+#include <stdio.h>
+#include <os/log.h>
+#include <mach/mach_time.h>
 
 typedef int32_t SNConnectionID;
 
@@ -206,4 +209,55 @@ bool SNPostDockSwipeWithOptions(SNSwipePhase phase, SNSwipeMotion motion, double
     CFRelease(swipe);
     CFRelease(gesture);
     return true;
+}
+
+// MARK: Events
+
+typedef void (*SNNotifyProc)(int32_t type, void *data, uint32_t length, void *context);
+typedef int32_t (*SNRegisterNotifyProcFn)(SNNotifyProc proc, int32_t type, void *context);
+
+static void SNForwardEvent(int32_t type, void *data, uint32_t length, void *context) {
+    if (context != NULL) ((SNWindowServerEventHandler)context)((SNWindowServerEvent)type);
+}
+
+bool SNObserveWindowServerEvent(SNWindowServerEvent event, SNWindowServerEventHandler handler) {
+    SNEnsureLoaded();
+    SNRegisterNotifyProcFn registerProc = (SNRegisterNotifyProcFn)SNLookup("CGSRegisterNotifyProc", "SLSRegisterNotifyProc");
+    if (registerProc == NULL || handler == NULL) return false;
+    return registerProc(SNForwardEvent, event, (void *)handler) == 0;
+}
+
+// MARK: Development
+
+typedef int32_t (*SNRegisterConnectionNotifyProcFn)(SNConnectionID, SNNotifyProc proc, int32_t type, void *context);
+
+static os_log_t SNDebugLog(void) {
+    static os_log_t log;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ log = os_log_create("com.alexandercollins.SpaceNamer", "cgs"); });
+    return log;
+}
+
+static double SNHostSeconds(void) {
+    static mach_timebase_info_data_t timebase;
+    if (timebase.denom == 0) mach_timebase_info(&timebase);
+    return (double)mach_absolute_time() * timebase.numer / timebase.denom / 1e9;
+}
+
+static void SNDebugNotify(int32_t type, void *data, uint32_t length, void *context) {
+    char hex[3 * 32 + 1] = {0};
+    for (uint32_t i = 0; i < length && i < 32 && data != NULL; i++) {
+        snprintf(hex + 3 * i, 4, "%02x ", ((const unsigned char *)data)[i]);
+    }
+    os_log_debug(SNDebugLog(), "cgs %{public}s %d len=%u at %.6f data=%{public}s", context ? "conn" : "global", type, length, SNHostSeconds(), hex);
+}
+
+void SNDebugObserveNotifications(int32_t from, int32_t to) {
+    SNEnsureLoaded();
+    SNRegisterNotifyProcFn global = (SNRegisterNotifyProcFn)SNLookup("CGSRegisterNotifyProc", "SLSRegisterNotifyProc");
+    SNRegisterConnectionNotifyProcFn connection = (SNRegisterConnectionNotifyProcFn)SNLookup("CGSRegisterConnectionNotifyProc", "SLSRegisterConnectionNotifyProc");
+    for (int32_t type = from; type < to; type++) {
+        if (global) global(SNDebugNotify, type, NULL);
+        if (connection && sMainConnectionID) connection(sMainConnectionID(), SNDebugNotify, type, (void *)1);
+    }
 }

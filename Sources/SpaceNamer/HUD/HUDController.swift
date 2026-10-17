@@ -121,6 +121,13 @@ final class HUDController {
         DispatchQueue.main.asyncAfter(deadline: .now() + (duration ?? Self.visibleDuration), execute: work)
     }
 
+    /// Gone at once, e.g. as Mission Control opens over it.
+    func dismiss() {
+        hideWork?.cancel()
+        hideWork = nil
+        panel.alphaValue = 0
+    }
+
     private func hide() {
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             panel.alphaValue = 0

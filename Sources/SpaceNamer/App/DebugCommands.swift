@@ -41,6 +41,8 @@ enum DebugCommands {
                 }
                 SNPostDockSwipeWithMotion(.ended, .vertical, steps.last ?? -1, Double(query["velocity"] ?? "-2.5") ?? -2.5)
             }
+        case "/cgs-observe":
+            SNDebugObserveNotifications(Int32(query["from"] ?? "0") ?? 0, Int32(query["to"] ?? "2000") ?? 2000)
         case "/gesture":
             // Streams a vertical three-finger swipe like a trackpad does (one update per
             // ~8 ms). path: comma-separated progress waypoints, each reached over `step` ms.
@@ -178,6 +180,14 @@ enum DebugCommands {
                 }
             }
         case "/key":
+            if let code = query["code"].flatMap(UInt16.init) {
+                // e.g. code=125&control=1 for ⌃↓ (App Exposé)
+                var flags: UInt64 = 0
+                if query["control"] != nil { flags |= CGEventFlags.maskControl.rawValue }
+                if query["option"] != nil { flags |= CGEventFlags.maskAlternate.rawValue }
+                EventSynth.press(SystemShortcut(keyCode: code, modifierFlags: flags))
+                return
+            }
             let direction = Int(query["direction"] ?? "1") ?? 1
             if let shortcut = SymbolicHotKeys.moveSpace(direction: direction) { EventSynth.press(shortcut) }
         case "/dock-ax":

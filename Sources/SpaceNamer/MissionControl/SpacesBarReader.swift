@@ -14,7 +14,7 @@ import QuartzCore
 /// the bar, while thumbnails keep reporting where they rest. `restFrame` undoes that, so a
 /// moving bar never looks like a layout change. Timed animations only ever report the end.
 final class SpacesBarReader: @unchecked Sendable {
-    struct Label: Equatable {
+    struct Label: Equatable, Codable {
         /// Identity of the Dock's element for this Space; it survives reordering, while
         /// titles ("Desktop N") are renumbered by position.
         let element: Int
@@ -23,7 +23,7 @@ final class SpacesBarReader: @unchecked Sendable {
         let frame: CGRect
     }
 
-    struct Layout: Equatable {
+    struct Layout: Equatable, Codable {
         let displayID: CGDirectDisplayID
         /// Bar and label frames as they are when the bar is fully in.
         let barFrame: CGRect
@@ -79,6 +79,7 @@ final class SpacesBarReader: @unchecked Sendable {
     private var lastOffsets: [CGDirectDisplayID: CGFloat] = [:]
     private var fast = false
     private var absentSince: CFTimeInterval?
+    private var seenSince: CFTimeInterval?
     private static let goneAfter: CFTimeInterval = 0.012
 
     /// Starts polling the given Dock process. Safe to call repeatedly.
@@ -92,6 +93,7 @@ final class SpacesBarReader: @unchecked Sendable {
             bars = []
             present = false
             absentSince = nil
+            seenSince = nil
             lastLayouts = []
             lastQuick = []
             lastTick = CACurrentMediaTime()
@@ -116,6 +118,7 @@ final class SpacesBarReader: @unchecked Sendable {
         queue.async { [self] in
             fast = false
             absentSince = nil
+            seenSince = nil
             timer?.cancel()
             timer = nil
             app = nil
@@ -142,21 +145,35 @@ final class SpacesBarReader: @unchecked Sendable {
         // Gone only once it stays gone for a few polls: the Dock rebuilds its interface now
         // and then (changing Space inside Mission Control), which isn't leaving.
         let confirmedGone = present && !isPresent && (absentSince.map { now - $0 >= Self.goneAfter } ?? false)
-        if (isPresent && !present) || confirmedGone {
-            present = isPresent
+        if confirmedGone {
+            present = false
             bars = []
             lastLayouts = []
             lastQuick = []
             lastOffsets = [:]
-            emit(isPresent ? .appeared(estimate) : .gone(absentSince ?? estimate))
+            emit(.gone(absentSince ?? estimate))
             absentSince = nil
         }
-        guard isPresent else { return }
+        guard isPresent else {
+            seenSince = nil
+            return
+        }
+        if !present, seenSince == nil { seenSince = estimate }
 
         if bars.isEmpty { bars = resolveBars() }
         guard !bars.isEmpty else {
             missionControl = nil // possibly rebuilt; look it up afresh next time
             return
+        }
+        // App Exposé uses the same interface without a Spaces bar, so it's Mission Control
+        // only once a bar turns up. Its time is still when the interface did.
+        if !present {
+            present = true
+            lastLayouts = []
+            lastQuick = []
+            lastOffsets = [:]
+            emit(.appeared(seenSince ?? estimate))
+            seenSince = nil
         }
 
         // Cheap check every tick: where the bar is, and where its first label sits in it.

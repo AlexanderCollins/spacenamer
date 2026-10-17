@@ -65,6 +65,23 @@ typedef CF_OPTIONS(uint32_t, SNSwipeOptions) {
 };
 bool SNPostDockSwipeWithOptions(SNSwipePhase phase, SNSwipeMotion motion, double progress, double velocity, SNSwipeOptions options);
 
+/// Window server events of interest. These arrive without any polling.
+typedef CF_ENUM(int32_t, SNWindowServerEvent) {
+    /// Mission Control (or App Exposé) is starting to come up; posted as it begins.
+    SNWindowServerEventExposeBegan = 1327,
+    /// It has finished going away.
+    SNWindowServerEventExposeEnded = 1328,
+};
+
+typedef void (*SNWindowServerEventHandler)(SNWindowServerEvent event);
+
+/// Calls `handler` (on the main thread) whenever `event` is posted. Returns false if the
+/// window server doesn't offer it.
+bool SNObserveWindowServerEvent(SNWindowServerEvent event, SNWindowServerEventHandler handler);
+
+/// Development aid: logs every window server notification in [from, to) with its host time.
+void SNDebugObserveNotifications(int32_t from, int32_t to);
+
 CF_ASSUME_NONNULL_END
 
 #endif

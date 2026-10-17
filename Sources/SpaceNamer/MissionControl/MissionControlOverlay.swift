@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import CGSBridge
 import Combine
 import os
 import SpaceNamerCore
@@ -74,7 +75,24 @@ final class MissionControlOverlay {
     private var layouts: [CGDirectDisplayID: SpacesBarReader.Layout] = [:]
     /// The last names-only layout per display, used to place names before the Dock
     /// publishes this session's layout (which it does only partway through the slide).
-    private var cache: [CGDirectDisplayID: SpacesBarReader.Layout] = [:]
+    /// Kept across launches, so the first Mission Control after a login has names too.
+    private var cache: [CGDirectDisplayID: SpacesBarReader.Layout] = MissionControlOverlay.loadCache() {
+        didSet { if cache != oldValue { Self.saveCache(cache) } }
+    }
+    private static let cacheKey = "MissionControlLayouts.v1"
+
+    private static func loadCache() -> [CGDirectDisplayID: SpacesBarReader.Layout] {
+        guard let data = UserDefaults.standard.data(forKey: cacheKey),
+              let layouts = try? JSONDecoder().decode([SpacesBarReader.Layout].self, from: data)
+        else { return [:] }
+        return Dictionary(layouts.map { ($0.displayID, $0) }, uniquingKeysWith: { _, last in last })
+    }
+
+    private static func saveCache(_ cache: [CGDirectDisplayID: SpacesBarReader.Layout]) {
+        if let data = try? JSONEncoder().encode(Array(cache.values)) {
+            UserDefaults.standard.set(data, forKey: cacheKey)
+        }
+    }
     private var gesture: Gesture?
     /// After a swipe is released: mirror the Dock's live bar position until it settles.
     private var followsDock = false {
@@ -131,6 +149,9 @@ final class MissionControlOverlay {
     private var cancellables = Set<AnyCancellable>()
     private var appearanceObservation: NSKeyValueObservation?
 
+    /// Mission Control is coming up (anything else on screen at its top should go).
+    var onOpening: (() -> Void)?
+
     init(model: AppModel) {
         self.model = model
     }
@@ -152,6 +173,14 @@ final class MissionControlOverlay {
     func start() {
         reader.onEvent = { [weak self] event in
             MainActor.assumeIsolated { self?.handle(event) }
+        }
+
+        // The window server says when Mission Control starts to come up, however it was
+        // asked for (keys, gestures, hot corners, the Dock icon, Launchpad, scripts).
+        Self.current = self
+        SNObserveWindowServerEvent(.exposeBegan) { _ in
+            let now = CACurrentMediaTime()
+            DispatchQueue.main.async { MainActor.assumeIsolated { MissionControlOverlay.current?.exposeBegan(at: now) } }
         }
 
         let center = NSWorkspace.shared.notificationCenter
@@ -273,7 +302,7 @@ final class MissionControlOverlay {
             // where the Dock says it is.
             if current.fingersTrusted, !current.dockMoved, let (displayID, reported) = dockOffsets.first,
                swipe.timestamp - current.startedAt > Self.followTimeout {
-                let height = direction == .opening ? Self.collapsedBarHeight : (layouts[displayID]?.barFrame.height ?? Self.collapsedBarHeight)
+                let height = direction == .opening ? collapsedHeight(displayID) : (layouts[displayID]?.barFrame.height ?? collapsedHeight(displayID))
                 if abs(Double(1 + reported / height) - current.fraction) * Double(height) > 4 {
                     current.fingersTrusted = false
                 }
@@ -383,6 +412,14 @@ final class MissionControlOverlay {
 
     // MARK: Arming
 
+    private static weak var current: MissionControlOverlay?
+
+    private func exposeBegan(at time: CFTimeInterval) {
+        log.debug("window server: expose began at \(time)")
+        guard phase == .idle else { return }
+        arm(.interface, at: time)
+    }
+
     private func arm(_ source: OpenSource, at time: CFTimeInterval = CACurrentMediaTime()) {
         guard isEnabled, let dock = currentDock() else { return }
         guard [.idle, .armed, .closing].contains(phase) else { return }
@@ -465,7 +502,7 @@ final class MissionControlOverlay {
         var settledIn = true
         for (displayID, offset) in offsets {
             guard let window = windows[displayID] else { continue }
-            let height = layouts[displayID]?.barFrame.height ?? Self.collapsedBarHeight
+            let height = layouts[displayID]?.barFrame.height ?? collapsedHeight(displayID)
             let fraction = height > 0 ? Double(1 + offset / height) : 1
             window.canvas.setSlide(offset: offset, opacity: Float(DockMotion.openingOpacity(fraction)))
             if abs(offset) > 0.5 { settledIn = false }
@@ -495,7 +532,7 @@ final class MissionControlOverlay {
         beginSession()
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         for window in windows.values {
-            let from = wasClosing ? window.canvas.presentedOffset : -Self.collapsedBarHeight
+            let from = wasClosing ? window.canvas.presentedOffset : -collapsedHeight(for: window)
             if reduceMotion {
                 window.canvas.setSlide(offset: 0, opacity: window.canvas.presentedOpacity)
                 window.canvas.fadeSlide(to: 1, duration: DockMotion.open.duration * 0.8)
@@ -545,16 +582,21 @@ final class MissionControlOverlay {
 
     /// Shows the overlay windows, with names placed from the last known layout.
     private func beginSession() {
+        onOpening?()
         endWork?.cancel()
         startWatchingMouse()
         if windows.isEmpty { rebuildWindows() }
         model.refresh()
         startSnapshotRefresh()
         for (displayID, layout) in cache where layouts[displayID] == nil {
+            // Only while the display is as it was (same size, so the same bar).
+            guard let screen = NSScreen.screens.first(where: { $0.displayID == displayID }),
+                  abs(screen.frame.width - layout.barFrame.width) < 1
+            else { continue }
             render(layout, transition: nil, fadeNew: false)
         }
         for window in windows.values where !window.isVisible {
-            window.canvas.setSlide(offset: -Self.collapsedBarHeight, opacity: 0)
+            window.canvas.setSlide(offset: -collapsedHeight(for: window), opacity: 0)
             window.orderFrontRegardless()
         }
         log.debug("session began: \(self.windows.count) windows, cache \(self.cache.count), visible \(self.windows.values.filter(\.isVisible).count)")
@@ -638,7 +680,7 @@ final class MissionControlOverlay {
         for window in windows.values {
             window.orderOut(nil)
             window.staysOnCurrentSpace = false
-            window.canvas.setSlide(offset: -Self.collapsedBarHeight, opacity: 0)
+            window.canvas.setSlide(offset: -collapsedHeight(for: window), opacity: 0)
         }
         layouts.removeAll()
         elementSpaces.removeAll()
@@ -662,14 +704,14 @@ final class MissionControlOverlay {
 
     private var currentFraction: Double {
         guard let (id, window) = windows.first, window.isVisible else { return phase == .open ? 1 : 0 }
-        let height = layouts[id]?.barFrame.height ?? Self.collapsedBarHeight
+        let height = layouts[id]?.barFrame.height ?? collapsedHeight(id)
         return height > 0 ? Double(1 + window.canvas.presentedOffset / height) : 0
     }
 
     private func setFraction(_ fraction: Double, direction: Gesture.Direction) {
         let opacity = DockMotion.openingOpacity(fraction)
         for window in windows.values {
-            let height = direction == .opening ? Self.collapsedBarHeight : barHeight(for: window)
+            let height = direction == .opening ? collapsedHeight(for: window) : barHeight(for: window)
             window.canvas.setSlide(offset: -CGFloat(1 - fraction) * height, opacity: Float(opacity))
         }
     }
@@ -685,7 +727,7 @@ final class MissionControlOverlay {
         )
         followsDock = false
         for window in windows.values {
-            let height = opening ? Self.collapsedBarHeight : barHeight(for: window)
+            let height = opening ? collapsedHeight(for: window) : barHeight(for: window)
             let from = window.canvas.presentedOffset
             window.canvas.animateSlide(from: from, to: opening ? 0 : -height, timing: timing, reference: time) { progress in
                 DockMotion.openingOpacity(fraction + (opening ? 1 - fraction : -fraction) * progress)
@@ -721,7 +763,9 @@ final class MissionControlOverlay {
                 transition = Self.transition(from: previous, to: layout, at: time)
                 if Self.isCollapsed(previous), !Self.isCollapsed(layout) { expandStartedAt = time }
             }
-            render(layout, transition: transition, fadeNew: true)
+            // Names placed from nothing (no earlier layout to start from) go straight on;
+            // only names added to ones already showing fade in.
+            render(layout, transition: transition, fadeNew: placedFromCache)
             if Self.isCollapsed(layout), !layout.labels.isEmpty { cache[layout.displayID] = layout }
         }
     }
@@ -999,9 +1043,19 @@ final class MissionControlOverlay {
         }
     }
 
+    /// The names-only bar's height on a display, as last measured there (it is 78 pt on
+    /// the displays measured so far, which is the guess until it has been seen).
+    private func collapsedHeight(_ id: CGDirectDisplayID?) -> CGFloat {
+        id.flatMap { cache[$0]?.barFrame.height } ?? Self.collapsedBarHeight
+    }
+
+    private func collapsedHeight(for window: OverlayWindow) -> CGFloat {
+        collapsedHeight(windows.first { $0.value === window }?.key)
+    }
+
     private func barHeight(for window: OverlayWindow) -> CGFloat {
         let id = windows.first { $0.value === window }?.key
-        return id.flatMap { layouts[$0]?.barFrame.height } ?? Self.collapsedBarHeight
+        return id.flatMap { layouts[$0]?.barFrame.height } ?? collapsedHeight(id)
     }
 
     // MARK: Windows
@@ -1015,7 +1069,7 @@ final class MissionControlOverlay {
             guard let id = screen.displayID else { continue }
             let window = OverlayWindow(screen: screen)
             window.canvas.style = style
-            window.canvas.setSlide(offset: -Self.collapsedBarHeight, opacity: 0)
+            window.canvas.setSlide(offset: -collapsedHeight(for: window), opacity: 0)
             windows[id] = window
         }
     }

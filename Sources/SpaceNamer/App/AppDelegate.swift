@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.start()
         statusItem = StatusItemController(model: model)
         missionControl = MissionControlOverlay(model: model)
+        missionControl.onOpening = { [weak self] in self?.hud.dismiss() }
         missionControl.start()
 
         predictor.onMove = { [weak self] move in self?.model.predictSwitch(move) }
