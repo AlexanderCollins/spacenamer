@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import os
 import SpaceNamerCore
 
 @MainActor
@@ -112,6 +113,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showHUD(for space: Space, early: Bool) {
         // Mission Control's bar already shows where you are, and the pill would sit on it.
         guard !missionControl.isMissionControlUp else { return }
+        #if DEBUG
+        Logger(subsystem: "com.alexandercollins.SpaceNamer", category: "hud").debug("show \(self.model.title(for: space), privacy: .public) early=\(early)")
+        #endif
         hud.show(
             title: model.title(for: space),
             space: space,

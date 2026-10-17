@@ -176,9 +176,23 @@ final class AppModel: ObservableObject {
                let left = previous.display(withID: display.id)?.spaces.first(where: { $0.managedID == old }) {
                 pushHistory(left.key)
             }
+            // Passing through on the way to a Space further along (quick swipes or presses
+            // in a row): the pill already names where this is going.
+            if let pending = pendingSwitch, pending.display == display.id {
+                if pending.key == space.key || Date().timeIntervalSince(pending.started) > Self.pendingSwitchLifetime {
+                    pendingSwitch = nil
+                } else {
+                    continue
+                }
+            }
             if preferences.showSwitchHUD { actions.showHUD(space, false) }
         }
     }
+
+    /// A switch that has started but not landed (macOS reports the current Space only once
+    /// it does). Further moves count on from it.
+    private var pendingSwitch: (key: SpaceKey, display: String, started: Date)?
+    private static let pendingSwitchLifetime: TimeInterval = 1.5
 
     private func pushHistory(_ key: SpaceKey) {
         history.removeAll { $0 == key }
@@ -340,16 +354,24 @@ final class AppModel: ObservableObject {
         guard !navigator.isJumping else { return }
         let cursorDisplay = snapshot.displays.first { DisplayResolver.isCursor(onDisplay: $0.id) }
         guard let display = cursorDisplay ?? snapshot.activeDisplay, let current = display.current else { return }
+        // Still on the way to an earlier move's Space: this one goes on from there.
+        var from = current
+        if let pending = pendingSwitch, pending.display == display.id,
+           Date().timeIntervalSince(pending.started) < Self.pendingSwitchLifetime,
+           let heading = display.spaces.first(where: { $0.key == pending.key }) {
+            from = heading
+        }
 
         let target: Space?
         switch move {
         case .relative(let offset):
-            let index = current.index + offset
+            let index = from.index + offset
             target = display.spaces.indices.contains(index) ? display.spaces[index] : nil
         case .position(let position):
             target = snapshot.space(atPosition: position)
         }
-        guard let target, target.key != current.key else { return }
+        guard let target, target.key != from.key else { return }
+        pendingSwitch = (target.key, display.id, Date())
         actions.switchStarted(target)
         if preferences.showSwitchHUD { actions.showHUD(target, true) }
     }
