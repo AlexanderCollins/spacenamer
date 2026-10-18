@@ -156,6 +156,9 @@ final class MissionControlOverlay {
     /// Until then the bar is turning around on the Dock's timing, which Accessibility
     /// doesn't show (it reports the end straight away).
     private var reversalEndsAt: CFTimeInterval = 0
+    /// When a timed slide in (a key, or another way in) started, laid out before the bar's
+    /// height was known.
+    private var timedOpenAt: CFTimeInterval?
     /// The thumbnail being dragged; the Dock hides its label while it's held.
     private var draggedElement: Int?
     /// Where the button went down, and what was under it at that moment (the bar starts
@@ -384,14 +387,14 @@ final class MissionControlOverlay {
             // where the Dock says it is.
             if current.fingersTrusted, !current.dockMoved, let (displayID, reported) = dockOffsets.first,
                swipe.timestamp - current.startedAt > Self.followTimeout {
-                let height = direction == .opening ? collapsedHeight(displayID) : (layouts[displayID]?.barFrame.height ?? collapsedHeight(displayID))
+                let height = barHeight(displayID)
                 if abs(Double(1 + reported / height) - current.fraction) * Double(height) > 4 {
                     current.fingersTrusted = false
                 }
             }
             gesture = current
             if current.fingersTrusted {
-                setFraction(current.fraction, direction: direction)
+                setFraction(current.fraction)
             } else {
                 followDock(dockOffsets, at: swipe.timestamp)
             }
@@ -533,7 +536,7 @@ final class MissionControlOverlay {
             gesture = current
             beginGestureOpen()
             followsDock = true
-            setFraction(current.fraction, direction: .opening)
+            setFraction(current.fraction)
             return
         }
         guard phase == .idle else { return }
@@ -654,6 +657,7 @@ final class MissionControlOverlay {
         let wasClosing = phase == .closing
         beginSession()
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        timedOpenAt = reduceMotion ? nil : time
         for window in windows.values {
             let from = wasClosing ? window.canvas.presentedOffset : -collapsedHeight(for: window)
             if reduceMotion {
@@ -817,6 +821,7 @@ final class MissionControlOverlay {
         switchingTo = nil
         dockOffsets.removeAll()
         dockSettlingSince = nil
+        timedOpenAt = nil
         closeEndsAt = 0
         reversalEndsAt = 0
         draggedElement = nil
@@ -833,14 +838,15 @@ final class MissionControlOverlay {
 
     private var currentFraction: Double {
         guard let (id, window) = windows.first, window.isVisible else { return phase == .open ? 1 : 0 }
-        let height = layouts[id]?.barFrame.height ?? collapsedHeight(id)
+        let height = barHeight(id)
         return height > 0 ? Double(1 + window.canvas.presentedOffset / height) : 0
     }
 
-    private func setFraction(_ fraction: Double, direction: Gesture.Direction) {
+    /// The bar slides by its own height, which is larger when it shows previews (as it does
+    /// from the start when the pointer is at the top of the screen).
+    private func setFraction(_ fraction: Double) {
         for window in windows.values {
-            let height = direction == .opening ? collapsedHeight(for: window) : barHeight(for: window)
-            window.canvas.setSlide(offset: -CGFloat(1 - fraction) * height)
+            window.canvas.setSlide(offset: -CGFloat(1 - fraction) * barHeight(for: window))
         }
     }
 
@@ -858,10 +864,6 @@ final class MissionControlOverlay {
     /// The Dock's frames show its reported position a little after it reports it.
     private static let finishDisplayLag: CFTimeInterval = 0.009
 
-    private func finishHeight(_ id: CGDirectDisplayID, opening: Bool) -> CGFloat {
-        opening ? collapsedHeight(id) : (layouts[id]?.barFrame.height ?? collapsedHeight(id))
-    }
-
     private func startFinish(opening: Bool, from fraction: Double, speed: Double, at time: CFTimeInterval, reported: Double? = nil) {
         let fraction = min(max(fraction, 0), 1)
         let model = DockFinish(reference: time, distance: opening ? 1 - fraction : fraction, speed: speed)
@@ -873,7 +875,7 @@ final class MissionControlOverlay {
             return opening ? 1 - left : left
         }
         for (id, window) in windows {
-            let height = finishHeight(id, opening: opening)
+            let height = barHeight(id)
             window.canvas.animateSlide(
                 reference: time,
                 duration: duration + lag,
@@ -920,7 +922,7 @@ final class MissionControlOverlay {
     /// part, turned round if the Dock undoes the swipe instead.
     private func correctFinish(_ current: Finishing, with offsets: [CGDirectDisplayID: CGFloat], at time: CFTimeInterval) {
         guard let (id, offset) = offsets.first(where: { windows[$0.key] != nil }) else { return }
-        let height = finishHeight(id, opening: current.opening)
+        let height = barHeight(id)
         guard height > 0 else { return }
         let reported = min(max(Double(1 + offset / height), 0), 1)
         let left = current.model.remaining(at: time)
@@ -948,15 +950,20 @@ final class MissionControlOverlay {
         if newLayouts.contains(where: { $0.labels.count != layouts[$0.displayID]?.labels.count }) {
             model.refresh()
         }
+        var resized = false
         for layout in newLayouts {
             let placedFromCache = windows[layout.displayID]?.canvas.labels.isEmpty == false
-            let previous = layouts[layout.displayID] ?? (placedFromCache ? cache[layout.displayID] : nil)
+            let known = layouts[layout.displayID]
+            let previous = known ?? (placedFromCache ? cache[layout.displayID] : nil)
             layouts[layout.displayID] = layout
+            if abs(layout.barFrame.height - (known?.barFrame.height ?? collapsedHeight(layout.displayID))) > 1 { resized = true }
             var transition: LabelTransition?
             // While the mouse is down (a drag, or a window being moved between Spaces),
-            // place labels directly rather than easing them.
+            // place labels directly rather than easing them. Previews from the first look
+            // were there from the start (the pointer was at the top): nothing grows.
             let dragging = NSEvent.pressedMouseButtons & 1 != 0
-            if let previous, previous.labels.map(\.frame) != layout.labels.map(\.frame), phase != .closing, !dragging {
+            let builtExpanded = known == nil && !Self.isCollapsed(layout)
+            if let previous, previous.labels.map(\.frame) != layout.labels.map(\.frame), phase != .closing, !dragging, !builtExpanded {
                 transition = Self.transition(from: previous, to: layout, at: time)
                 if Self.isCollapsed(previous), !Self.isCollapsed(layout) { expandStartedAt = time }
             }
@@ -964,6 +971,17 @@ final class MissionControlOverlay {
             // only names added to ones already showing fade in.
             render(layout, transition: transition, fadeNew: placedFromCache)
             if Self.isCollapsed(layout), !layout.labels.isEmpty { cache[layout.displayID] = layout }
+        }
+        // A slide in under way was set out for the old height: carry it on over the new one.
+        guard resized, phase == .opening, gesture == nil else { return }
+        if let current = finishing {
+            let left = current.model.remaining(at: time)
+            startFinish(opening: current.opening, from: current.opening ? 1 - left : left, speed: max(0, current.model.speed(at: time)), at: time)
+        } else if let start = timedOpenAt, time < start + DockMotion.open.end {
+            // Same timing, previews or not (within ~4 pt over 8 runs), over the bar's height.
+            for (id, window) in windows {
+                window.canvas.animateSlide(from: -barHeight(id), to: 0, timing: DockMotion.open, reference: start)
+            }
         }
     }
 
@@ -1263,9 +1281,13 @@ final class MissionControlOverlay {
         collapsedHeight(windows.first { $0.value === window }?.key)
     }
 
+    /// The bar's height on a display as it is now, previews or not.
+    private func barHeight(_ id: CGDirectDisplayID?) -> CGFloat {
+        id.flatMap { layouts[$0]?.barFrame.height } ?? collapsedHeight(id)
+    }
+
     private func barHeight(for window: OverlayWindow) -> CGFloat {
-        let id = windows.first { $0.value === window }?.key
-        return id.flatMap { layouts[$0]?.barFrame.height } ?? collapsedHeight(id)
+        barHeight(windows.first { $0.value === window }?.key)
     }
 
     // MARK: Windows
