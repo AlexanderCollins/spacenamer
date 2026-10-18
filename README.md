@@ -17,8 +17,8 @@ is injected into other apps, and no system files are modified.
   desktop is closed.
 - **Names in Mission Control.** The names appear in Mission Control's Spaces bar in place of
   "Desktop N", and move with the bar as it opens, closes, expands into previews and rearranges.
-- **Menu bar.** Shows the current Space's name (or number), with a menu to rename it or jump
-  to any other.
+- **Menu bar.** Shows the current Space's name (or number), changing the moment a switch
+  starts, with a menu to rename it or jump to any other.
 - **Instant switching.** Jump straight to any desktop without the slide animation.
 - **Switcher.** Press **⌃⌥Space** for a searchable list of your Spaces: type a few letters, press
   Return to go there, or rename from the list.
@@ -62,8 +62,8 @@ You can also sign with your own identity: `SIGN_IDENTITY="Developer ID Applicati
    launches).
 3. Rename a Space from the menu bar, the switcher (⌃⌥Space), or **Settings → Spaces**.
 
-Settings also has **Open at Login**, the menu bar style, where the switch pill appears, and the
-switching method.
+Settings also has **Launch at login**, what the menu bar shows, where the switch pill appears,
+and the switching method.
 
 ### Recommended macOS settings
 
