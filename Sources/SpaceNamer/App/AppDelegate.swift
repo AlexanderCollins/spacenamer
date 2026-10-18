@@ -43,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         missionControl.start()
 
         predictor.onMove = { [weak self] move in self?.model.predictSwitch(move) }
+        predictor.onHeading = { [weak self] move in self?.model.swipeHeading(move) }
         predictor.swipeSign = { [weak self] in self?.model.swipeSign ?? 1 }
         input.onKey = [
             { [weak self] key in self?.predictor.handle(key) },

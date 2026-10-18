@@ -19,6 +19,9 @@ final class SwitchPredictor {
     }
 
     var onMove: ((Move) -> Void)?
+    /// Which way a swipe between Spaces is going while the fingers are down (nil: nowhere,
+    /// or it's over). Called after `onMove` when a swipe goes through.
+    var onHeading: ((Move?) -> Void)?
     /// Swipe direction that means "next Space"; shared with the navigator's calibration.
     var swipeSign: () -> Int = { 1 }
     var isEnabled = false {
@@ -26,6 +29,7 @@ final class SwitchPredictor {
     }
 
     private var bindings: [Binding] = []
+    private var heading: Int?
     private var bindingsLoaded = Date.distantPast
 
     func handle(_ key: InputMonitor.Key) {
@@ -37,11 +41,29 @@ final class SwitchPredictor {
     }
 
     func handle(_ swipe: InputMonitor.DockSwipe) {
-        guard isEnabled, swipe.motion == .horizontal, swipe.phase == .ended else { return }
-        // The Dock completes a swipe that got halfway, or that was flicked in its direction.
-        let flicked = abs(swipe.velocity) >= 0.8 && (swipe.velocity > 0) == (swipe.progress > 0)
-        guard abs(swipe.progress) >= 0.5 || (flicked && abs(swipe.progress) >= 0.05) else { return }
-        onMove?(.relative((swipe.progress > 0 ? 1 : -1) * swipeSign()))
+        guard isEnabled, swipe.motion == .horizontal else { return }
+        switch swipe.phase {
+        case .changed:
+            let direction = abs(swipe.progress) < 0.01 ? nil : (swipe.progress > 0 ? 1 : -1) * swipeSign()
+            guard direction != heading else { return }
+            heading = direction
+            onHeading?(direction.map { .relative($0) })
+        case .ended:
+            // The Dock completes a swipe that got halfway, or that was flicked in its direction.
+            let flicked = abs(swipe.velocity) >= 0.8 && (swipe.velocity > 0) == (swipe.progress > 0)
+            if abs(swipe.progress) >= 0.5 || (flicked && abs(swipe.progress) >= 0.05) {
+                onMove?(.relative((swipe.progress > 0 ? 1 : -1) * swipeSign()))
+            }
+            endHeading()
+        case .began, .cancelled, .other:
+            endHeading()
+        }
+    }
+
+    private func endHeading() {
+        guard heading != nil else { return }
+        heading = nil
+        onHeading?(nil)
     }
 
     private func reloadBindings() {

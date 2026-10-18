@@ -20,7 +20,9 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var snapshot: SpacesSnapshot = .empty
     /// Where a switch that has started is heading, until macOS reports it has landed (at
-    /// the end of its slide), so the menu bar can name it straight away, as the pill does.
+    /// the end of its slide), so the menu bar can name it straight away. During a swipe it's
+    /// where the fingers are taking it: macOS draws the arriving desktop's menu bar as the
+    /// swipe starts and doesn't redraw it until the switch has landed.
     @Published private(set) var arriving: Space?
     @Published private(set) var hasAccess = EventSynth.hasAccess
     /// Bumped whenever names or per-Space shortcuts change.
@@ -195,7 +197,15 @@ final class AppModel: ObservableObject {
     /// A switch that has started but not landed (macOS reports the current Space only once
     /// it does). Further moves count on from it.
     private var pendingSwitch: (key: SpaceKey, display: String, started: Date)? {
-        didSet { arriving = pendingSwitch.flatMap { snapshot.space(forKey: $0.key) } }
+        didSet { updateArriving() }
+    }
+    private var swipeHeading: Space? {
+        didSet { updateArriving() }
+    }
+
+    private func updateArriving() {
+        let next = swipeHeading ?? pendingSwitch.flatMap { snapshot.space(forKey: $0.key) }
+        if next != arriving { arriving = next }
     }
     private static let pendingSwitchLifetime: TimeInterval = 1.5
 
@@ -362,9 +372,29 @@ final class AppModel: ObservableObject {
 
     /// Called when a switch starts that macOS will report only once its animation ends.
     func predictSwitch(_ move: SwitchPredictor.Move) {
-        guard !navigator.isJumping else { return }
+        guard !navigator.isJumping, let (target, display) = switchTarget(for: move) else { return }
+        let started = Date()
+        pendingSwitch = (target.key, display.id, started)
+        // A switch macOS didn't make after all.
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.pendingSwitchLifetime) { [weak self] in
+            guard let self, pendingSwitch?.started == started else { return }
+            pendingSwitch = nil
+        }
+        actions.switchStarted(target)
+        if preferences.showSwitchHUD { actions.showHUD(target, true) }
+    }
+
+    /// A swipe between Spaces is under way, heading `move` (nil: back where it started, or
+    /// over). The pill waits to see whether it goes through; the menu bar can't.
+    func swipeHeading(_ move: SwitchPredictor.Move?) {
+        swipeHeading = navigator.isJumping ? nil : move.flatMap { switchTarget(for: $0)?.space }
+    }
+
+    /// The Space `move` goes to on the display under the pointer, counting on from a switch
+    /// still on its way there.
+    private func switchTarget(for move: SwitchPredictor.Move) -> (space: Space, display: DisplaySpaces)? {
         let cursorDisplay = snapshot.displays.first { DisplayResolver.isCursor(onDisplay: $0.id) }
-        guard let display = cursorDisplay ?? snapshot.activeDisplay, let current = display.current else { return }
+        guard let display = cursorDisplay ?? snapshot.activeDisplay, let current = display.current else { return nil }
         // Still on the way to an earlier move's Space: this one goes on from there.
         var from = current
         if let pending = pendingSwitch, pending.display == display.id,
@@ -381,16 +411,8 @@ final class AppModel: ObservableObject {
         case .position(let position):
             target = snapshot.space(atPosition: position)
         }
-        guard let target, target.key != from.key else { return }
-        let started = Date()
-        pendingSwitch = (target.key, display.id, started)
-        // A switch macOS didn't make after all.
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.pendingSwitchLifetime) { [weak self] in
-            guard let self, pendingSwitch?.started == started else { return }
-            pendingSwitch = nil
-        }
-        actions.switchStarted(target)
-        if preferences.showSwitchHUD { actions.showHUD(target, true) }
+        guard let target, target.key != from.key else { return nil }
+        return (target, display)
     }
 
     var swipeSign: Int { navigator.swipeSign }
