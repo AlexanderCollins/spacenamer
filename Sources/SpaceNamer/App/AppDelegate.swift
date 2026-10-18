@@ -52,13 +52,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             { [weak self] swipe in self?.predictor.handle(swipe) },
             { [weak self] swipe in self?.missionControl.handle(swipe) },
         ]
-        let preferences = model.preferences
-        Publishers.CombineLatest3(preferences.$showSwitchHUD, preferences.$showNamesInMissionControl, model.$hasAccess)
-            .sink { [weak self] hud, names, access in
+        // The menu bar names a switch as it starts, so the one shared tap runs whenever it
+        // can, not only for the pill or Mission Control names.
+        model.$hasAccess
+            .sink { [weak self] access in
                 guard let self else { return }
-                predictor.isEnabled = (hud || names) && access
-                // One tap serves both features; it only runs while one of them needs it.
-                input.setEnabled(access && (hud || names))
+                predictor.isEnabled = access
+                input.setEnabled(access)
             }
             .store(in: &cancellables)
 

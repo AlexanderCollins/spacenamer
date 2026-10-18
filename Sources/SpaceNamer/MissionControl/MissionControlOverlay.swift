@@ -96,6 +96,14 @@ final class MissionControlOverlay {
     private var hasExposeSignals = false
     /// The Dock answers a swipe it takes within ~6 ms; past this it has ignored it.
     private static let swipeAnswerWindow: CFTimeInterval = 0.1
+    /// A swipe that leaves Mission Control up (opening it, springing back, or another swipe
+    /// up while it's open) keeps the Dock busy until the bar has settled, up to ~0.55 s after
+    /// the fingers lift, which it announces (AXExposeShowAllWindows). It ignores swipes
+    /// that begin before then, all the way through.
+    private var dockSettlingSince: CFTimeInterval?
+    private var dockSettledAt: CFTimeInterval = 0
+    /// The swipe under way is one the Dock isn't acting on.
+    private var swipeIgnored = false
     private var openSource: OpenSource?
     private var windows: [CGDirectDisplayID: OverlayWindow] = [:]
     private var layouts: [CGDirectDisplayID: SpacesBarReader.Layout] = [:]
@@ -309,6 +317,11 @@ final class MissionControlOverlay {
         guard isEnabled, swipe.motion == .vertical else { return }
         switch swipe.phase {
         case .began:
+            swipeIgnored = false
+            if isDockSettling(at: swipe.timestamp) {
+                ignoreSwipe("Mission Control is still settling")
+                return
+            }
             gesture = Gesture(direction: nil, fraction: currentFraction, startedAt: swipe.timestamp)
             reader.setFast(true)
         case .changed:
@@ -332,7 +345,14 @@ final class MissionControlOverlay {
                     if !current.awaitingDock { beginGestureOpen() }
                 } else if progress > 0, [.open, .opening].contains(phase) {
                     current.direction = .closing
+                    // It may have gone up first; the bar moves from here.
+                    current.startedAt = swipe.timestamp
                     endWork?.cancel()
+                } else if progress < 0, [.open, .opening].contains(phase) {
+                    // Further up with Mission Control already in moves nothing, but the
+                    // fingers can still come back down through the start and close it.
+                    gesture = current
+                    return
                 } else {
                     gesture = nil // e.g. a swipe down into App Exposé
                     return
@@ -350,12 +370,13 @@ final class MissionControlOverlay {
                     return
                 }
                 current.progress = progress
-                current.fraction = min(max(abs(progress) / Self.gestureTravel, 0), 1)
+                current.fraction = min(max(-progress / Self.gestureTravel, 0), 1)
                 gesture = current
                 return
             }
             current.progress = progress
-            let travel = min(max(abs(progress) / Self.gestureTravel, 0), 1)
+            // Back past where it started moves the bar no further.
+            let travel = min(max((direction == .opening ? -progress : progress) / Self.gestureTravel, 0), 1)
             current.fraction = direction == .opening ? travel : 1 - travel
             // The Dock's report of the bar is the truth, but it comes a little late; the
             // fingers lead it as long as the Dock moves the bar with them. Should the bar
@@ -375,6 +396,7 @@ final class MissionControlOverlay {
                 followDock(dockOffsets, at: swipe.timestamp)
             }
         case .ended, .cancelled:
+            defer { swipeEnded(at: swipe.timestamp) }
             guard let current = gesture, let direction = current.direction, !current.awaitingDock else {
                 gesture = nil
                 reader.setFast(followsDock)
@@ -402,8 +424,22 @@ final class MissionControlOverlay {
     /// A swipe the Dock isn't acting on: leave everything as it is until the next one.
     private func ignoreSwipe(_ reason: String) {
         log.debug("swipe ignored: \(reason, privacy: .public)")
+        swipeIgnored = true
         gesture = nil
         reader.setFast(followsDock)
+    }
+
+    /// A swipe the Dock acted on ended with Mission Control staying up: it takes no other
+    /// until the bar has settled, unless it has said so already.
+    private func swipeEnded(at time: CFTimeInterval) {
+        guard !swipeIgnored, [.opening, .open].contains(phase), dockSettledAt < time else { return }
+        dockSettlingSince = time
+    }
+
+    private func isDockSettling(at time: CFTimeInterval) -> Bool {
+        // Should it never say, stop waiting well after it would have.
+        guard let since = dockSettlingSince else { return false }
+        return time - since < 1.0
     }
 
     /// The Dock is still taking Mission Control away, and ignores requests to bring it back.
@@ -462,6 +498,8 @@ final class MissionControlOverlay {
         log.debug("dock \(name, privacy: .public) at \(now)")
         switch name {
         case "AXExposeShowAllWindows":
+            dockSettlingSince = nil
+            dockSettledAt = now
             switch phase {
             case .idle, .armed:
                 // We missed the start (nothing we could see triggered it): ease in now.
@@ -714,6 +752,7 @@ final class MissionControlOverlay {
         guard phase != .closing else { return }
         phase = .closing
         followsDock = false
+        dockSettlingSince = nil
         let grown = expandStartedAt.map { (reference - $0 - DockMotion.expand.delay) / DockMotion.expand.duration } ?? 1
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         var end = reference
@@ -777,6 +816,7 @@ final class MissionControlOverlay {
         switchingWork?.cancel()
         switchingTo = nil
         dockOffsets.removeAll()
+        dockSettlingSince = nil
         closeEndsAt = 0
         reversalEndsAt = 0
         draggedElement = nil
@@ -841,6 +881,7 @@ final class MissionControlOverlay {
             )
         }
         phase = opening ? .opening : .closing
+        if !opening { dockSettlingSince = nil }
         // A close the fingers started can't be turned around (the Dock ignores swipes and
         // keys until it has finished), unlike a timed one.
         closeEndsAt = 0

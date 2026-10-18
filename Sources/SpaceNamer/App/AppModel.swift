@@ -19,6 +19,9 @@ final class AppModel: ObservableObject {
     }
 
     @Published private(set) var snapshot: SpacesSnapshot = .empty
+    /// Where a switch that has started is heading, until macOS reports it has landed (at
+    /// the end of its slide), so the menu bar can name it straight away, as the pill does.
+    @Published private(set) var arriving: Space?
     @Published private(set) var hasAccess = EventSynth.hasAccess
     /// Bumped whenever names or per-Space shortcuts change.
     @Published private(set) var namesRevision = 0
@@ -191,7 +194,9 @@ final class AppModel: ObservableObject {
 
     /// A switch that has started but not landed (macOS reports the current Space only once
     /// it does). Further moves count on from it.
-    private var pendingSwitch: (key: SpaceKey, display: String, started: Date)?
+    private var pendingSwitch: (key: SpaceKey, display: String, started: Date)? {
+        didSet { arriving = pendingSwitch.flatMap { snapshot.space(forKey: $0.key) } }
+    }
     private static let pendingSwitchLifetime: TimeInterval = 1.5
 
     private func pushHistory(_ key: SpaceKey) {
@@ -274,6 +279,7 @@ final class AppModel: ObservableObject {
 
     func jump(toKey key: SpaceKey) {
         refresh()
+        pendingSwitch = nil // this jump decides where we end up
         let origin = snapshot.current
         jumpTask?.cancel()
         jumpTask = Task { [weak self] in
@@ -376,7 +382,13 @@ final class AppModel: ObservableObject {
             target = snapshot.space(atPosition: position)
         }
         guard let target, target.key != from.key else { return }
-        pendingSwitch = (target.key, display.id, Date())
+        let started = Date()
+        pendingSwitch = (target.key, display.id, started)
+        // A switch macOS didn't make after all.
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.pendingSwitchLifetime) { [weak self] in
+            guard let self, pendingSwitch?.started == started else { return }
+            pendingSwitch = nil
+        }
         actions.switchStarted(target)
         if preferences.showSwitchHUD { actions.showHUD(target, true) }
     }

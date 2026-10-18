@@ -23,8 +23,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.autoenablesItems = false
         statusItem.menu = menu
 
-        Publishers.Merge3(
+        Publishers.Merge4(
             model.$snapshot.map { _ in () },
+            model.$arriving.map { _ in () },
             model.$namesRevision.map { _ in () },
             model.preferences.$menuBarStyle.map { _ in () }
         )
@@ -40,7 +41,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     private func updateButton() {
         guard let button = statusItem.button else { return }
-        guard let space = model.snapshot.current else {
+        guard let space = model.arriving ?? model.snapshot.current else {
             button.image = Badges.number("–", filled: false)
             button.title = ""
             button.toolTip = "SpaceNamer"
