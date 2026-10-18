@@ -251,6 +251,11 @@ final class AppModel: ObservableObject {
     }
 
     func screen(for displayID: String) -> NSScreen? {
+        // Displays sharing Spaces all switch together: show it where the pointer is.
+        if displayID == DisplayResolver.sharedSpacesIdentifier {
+            let pointer = NSEvent.mouseLocation
+            return NSScreen.screens.first { NSMouseInRect(pointer, $0.frame, false) } ?? NSScreen.main
+        }
         guard let target = DisplayResolver.displayID(for: displayID) else { return NSScreen.main }
         return NSScreen.screens.first { $0.displayID == target } ?? NSScreen.main
     }

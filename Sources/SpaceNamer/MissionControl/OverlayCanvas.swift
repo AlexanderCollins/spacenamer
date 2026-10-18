@@ -181,26 +181,40 @@ final class OverlayCanvas {
 
     var presentedOpacity: Float { slide.presentation()?.opacity ?? slide.opacity }
 
-    /// Places the bar directly (gesture tracking): no animation.
-    func setSlide(offset: CGFloat, opacity: Float) {
+    /// How opaque the bar is at `offset`: fully, while any name can still be on screen, so
+    /// the Dock's labels never show through; it clears only once they're all past the top
+    /// edge, where it makes no difference to what's seen.
+    func edgeOpacity(atOffset offset: CGFloat) -> Float {
+        let bottoms = labels.values.compactMap { label in label.geometry.map { $0.center.y + $0.size.height / 2 } }
+        guard let lowest = bottoms.max() else { return 1 }
+        let above = -(offset + lowest) // the lowest name's distance above the screen
+        let t = Float(min(max((above - 2) / 12, 0), 1))
+        return 1 - t * t * (3 - 2 * t)
+    }
+
+    /// Places the bar directly (gesture tracking): no animation. Without an `opacity`,
+    /// the bar takes its `edgeOpacity` there.
+    func setSlide(offset: CGFloat, opacity: Float? = nil) {
         withoutAnimation {
             slide.removeAnimation(forKey: "slide")
             slide.removeAnimation(forKey: "fade")
             slide.setValue(offset, forKeyPath: "transform.translation.y")
-            slide.opacity = opacity
+            slide.opacity = opacity ?? edgeOpacity(atOffset: offset)
         }
     }
 
-    /// Animates the bar between offsets on a Dock timing, with opacity following the
-    /// same progress through `opacity(progress)`.
-    func animateSlide(from: CGFloat, to: CGFloat, timing: DockMotion.Timing, reference: CFTimeInterval, opacity: @escaping (Double) -> Double) {
+    /// Animates the bar between offsets on a Dock timing, its opacity following its
+    /// position (`edgeOpacity`) all the way.
+    func animateSlide(from: CGFloat, to: CGFloat, timing: DockMotion.Timing, reference: CFTimeInterval) {
         withoutAnimation {
             slide.setValue(to, forKeyPath: "transform.translation.y")
-            slide.opacity = Float(opacity(1))
+            slide.opacity = edgeOpacity(atOffset: to)
         }
         let move = timing.animation("transform.translation.y", from: from, to: to, reference: reference, on: slide)
         let fade = CAKeyframeAnimation(keyPath: "opacity")
-        fade.values = (0...48).map { NSNumber(value: opacity(timing.curve.value(at: Double($0) / 48))) }
+        fade.values = (0...48).map { index in
+            NSNumber(value: edgeOpacity(atOffset: from + (to - from) * CGFloat(timing.curve.value(at: Double(index) / 48))))
+        }
         fade.keyTimes = move.keyTimes
         fade.calculationMode = .linear
         fade.duration = move.duration
@@ -210,20 +224,21 @@ final class OverlayCanvas {
         slide.add(fade, forKey: "fade")
     }
 
-    /// Slides along any path: `offset` and `opacity` give the values at each host time
-    /// from `reference` to `reference + duration`, sampled into keyframes.
-    func animateSlide(reference: CFTimeInterval, duration: CFTimeInterval, offset: (CFTimeInterval) -> CGFloat, opacity: (CFTimeInterval) -> Float) {
+    /// Slides along any path: `offset` gives the bar's offset at each host time from
+    /// `reference` to `reference + duration`, sampled into keyframes; opacity follows
+    /// the position, as in `edgeOpacity`.
+    func animateSlide(reference: CFTimeInterval, duration: CFTimeInterval, offset: (CFTimeInterval) -> CGFloat) {
         let samples = max(8, Int(duration * 120))
-        let times = (0...samples).map { reference + duration * Double($0) / Double(samples) }
+        let offsets = (0...samples).map { offset(reference + duration * Double($0) / Double(samples)) }
         withoutAnimation {
-            slide.setValue(offset(times.last!), forKeyPath: "transform.translation.y")
-            slide.opacity = opacity(times.last!)
+            slide.setValue(offsets.last!, forKeyPath: "transform.translation.y")
+            slide.opacity = edgeOpacity(atOffset: offsets.last!)
         }
         let keyTimes = (0...samples).map { NSNumber(value: Double($0) / Double(samples)) }
         let move = CAKeyframeAnimation(keyPath: "transform.translation.y")
-        move.values = times.map { NSNumber(value: Double(offset($0))) }
+        move.values = offsets.map { NSNumber(value: Double($0)) }
         let fade = CAKeyframeAnimation(keyPath: "opacity")
-        fade.values = times.map { NSNumber(value: opacity($0)) }
+        fade.values = offsets.map { NSNumber(value: edgeOpacity(atOffset: $0)) }
         for animation in [move, fade] {
             animation.keyTimes = keyTimes
             animation.calculationMode = .linear
@@ -327,9 +342,18 @@ final class OverlayCanvas {
             guard left + right > gap, gap > 0 else { continue }
             switch (names[index] != nil, names[index + 1] != nil) {
             case (true, true):
-                let scale = gap / (left + right)
-                widths[index] = 2 * left * scale
-                widths[index + 1] = 2 * right * scale
+                // Take the room from the length beyond each one's minimum, so a short name
+                // keeps covering the Dock's label; scale both only if even that won't fit.
+                let spareLeft = left - baseWidths[index] / 2, spareRight = right - baseWidths[index + 1] / 2
+                let excess = left + right - gap
+                if spareLeft + spareRight >= excess {
+                    widths[index] = 2 * (left - excess * spareLeft / (spareLeft + spareRight))
+                    widths[index + 1] = 2 * (right - excess * spareRight / (spareLeft + spareRight))
+                } else {
+                    let scale = gap / (left + right)
+                    widths[index] = 2 * left * scale
+                    widths[index + 1] = 2 * right * scale
+                }
             case (true, false):
                 widths[index] = 2 * max(gap - right, baseWidths[index] / 2)
             case (false, true):

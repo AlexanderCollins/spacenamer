@@ -57,6 +57,9 @@ final class MissionControlOverlay {
         var fingersTrusted = true
         /// The Dock has moved the bar since the swipe began.
         var dockMoved = false
+        /// Waiting for the window server to say the Dock took the swipe; until then the
+        /// names stay out of sight (it sometimes ignores one, see `exposeState`).
+        var awaitingDock = false
         var startedAt: CFTimeInterval = 0
     }
 
@@ -69,7 +72,30 @@ final class MissionControlOverlay {
     private let model: AppModel
     private let log = Logger(subsystem: "com.alexandercollins.SpaceNamer", category: "mission-control")
     private let reader = SpacesBarReader()
-    private var phase: Phase = .idle
+    private var phase: Phase = .idle {
+        didSet {
+            guard phase != oldValue, exposeState != .inactive else { return }
+            if phase == .closing {
+                exposeState = .ending
+                exposeEndingSince = CACurrentMediaTime()
+            } else if phase == .opening || phase == .open {
+                exposeState = .active
+            }
+        }
+    }
+
+    /// Mission Control as the window server last announced it. The Dock answers a swipe or
+    /// key it acts on by starting Mission Control within a few milliseconds; once it has
+    /// begun taking Mission Control away it ignores both until it has finished (~0.5 s
+    /// after a swipe closes it), except that a timed close can still be turned around.
+    private enum ExposeState { case inactive, active, ending }
+    private var exposeState = ExposeState.inactive
+    private var exposeBeganAt: CFTimeInterval = 0
+    private var exposeEndingSince: CFTimeInterval = 0
+    /// Whether the window server's start and end announcements are available at all.
+    private var hasExposeSignals = false
+    /// The Dock answers a swipe it takes within ~6 ms; past this it has ignored it.
+    private static let swipeAnswerWindow: CFTimeInterval = 0.1
     private var openSource: OpenSource?
     private var windows: [CGDirectDisplayID: OverlayWindow] = [:]
     private var layouts: [CGDirectDisplayID: SpacesBarReader.Layout] = [:]
@@ -210,10 +236,14 @@ final class MissionControlOverlay {
         // The window server says when Mission Control starts to come up, however it was
         // asked for (keys, gestures, hot corners, the Dock icon, Launchpad, scripts).
         Self.current = self
-        SNObserveWindowServerEvent(.exposeBegan) { _ in
+        let began = SNObserveWindowServerEvent(.exposeBegan) { _ in
             let now = CACurrentMediaTime()
             DispatchQueue.main.async { MainActor.assumeIsolated { MissionControlOverlay.current?.exposeBegan(at: now) } }
         }
+        let ended = SNObserveWindowServerEvent(.exposeEnded) { _ in
+            DispatchQueue.main.async { MainActor.assumeIsolated { MissionControlOverlay.current?.exposeState = .inactive } }
+        }
+        hasExposeSignals = began && ended
 
         let center = NSWorkspace.shared.notificationCenter
         center.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { [weak self] note in
@@ -292,8 +322,14 @@ final class MissionControlOverlay {
                     reverseClose(at: swipe.timestamp)
                     return
                 } else if progress < 0, [.idle, .armed, .closing].contains(phase) {
+                    if isDockEnding(at: swipe.timestamp) {
+                        ignoreSwipe("Mission Control is still closing") // the Dock won't open it again yet
+                        return
+                    }
                     current.direction = .opening
-                    beginGestureOpen()
+                    // Not started yet: show nothing until the Dock says it took the swipe.
+                    current.awaitingDock = hasExposeSignals && exposeState == .inactive
+                    if !current.awaitingDock { beginGestureOpen() }
                 } else if progress > 0, [.open, .opening].contains(phase) {
                     current.direction = .closing
                     endWork?.cancel()
@@ -302,9 +338,19 @@ final class MissionControlOverlay {
                     return
                 }
                 // From here the bar is wherever the Dock says it is.
-                followsDock = true
+                if !current.awaitingDock { followsDock = true }
             }
             guard let direction = current.direction, !current.reversing else {
+                gesture = current
+                return
+            }
+            if current.awaitingDock {
+                guard swipe.timestamp - current.startedAt < Self.swipeAnswerWindow else {
+                    ignoreSwipe("the Dock didn't take it")
+                    return
+                }
+                current.progress = progress
+                current.fraction = min(max(abs(progress) / Self.gestureTravel, 0), 1)
                 gesture = current
                 return
             }
@@ -329,8 +375,9 @@ final class MissionControlOverlay {
                 followDock(dockOffsets, at: swipe.timestamp)
             }
         case .ended, .cancelled:
-            guard let current = gesture, let direction = current.direction else {
+            guard let current = gesture, let direction = current.direction, !current.awaitingDock else {
                 gesture = nil
+                reader.setFast(followsDock)
                 return
             }
             gesture = nil
@@ -350,6 +397,19 @@ final class MissionControlOverlay {
         case .other:
             break
         }
+    }
+
+    /// A swipe the Dock isn't acting on: leave everything as it is until the next one.
+    private func ignoreSwipe(_ reason: String) {
+        log.debug("swipe ignored: \(reason, privacy: .public)")
+        gesture = nil
+        reader.setFast(followsDock)
+    }
+
+    /// The Dock is still taking Mission Control away, and ignores requests to bring it back.
+    private func isDockEnding(at time: CFTimeInterval) -> Bool {
+        // Should its end never be announced, stop waiting for it.
+        hasExposeSignals && exposeState == .ending && time - exposeEndingSince < 1.5 && !isLeaving(at: time)
     }
 
     private func reloadMissionControlKeys() {
@@ -426,6 +486,18 @@ final class MissionControlOverlay {
 
     private func exposeBegan(at time: CFTimeInterval) {
         log.debug("window server: expose began at \(time)")
+        exposeState = .active
+        exposeBeganAt = time
+        if var current = gesture, current.awaitingDock, time >= current.startedAt - 0.002 {
+            // The Dock took the swipe: catch the names up with the fingers.
+            log.debug("swipe confirmed \(time - current.startedAt) s after it began")
+            current.awaitingDock = false
+            gesture = current
+            beginGestureOpen()
+            followsDock = true
+            setFraction(current.fraction, direction: .opening)
+            return
+        }
         guard phase == .idle else { return }
         arm(.interface, at: time)
     }
@@ -433,6 +505,7 @@ final class MissionControlOverlay {
     private func arm(_ source: OpenSource, at time: CFTimeInterval = CACurrentMediaTime()) {
         guard isEnabled, let dock = currentDock() else { return }
         guard [.idle, .armed, .closing].contains(phase) else { return }
+        if source == .key, isDockEnding(at: time) { return } // ignored by the Dock too
         if phase == .closing {
             if isLeaving(at: time) {
                 reverseClose(at: time)
@@ -516,9 +589,7 @@ final class MissionControlOverlay {
         var settledIn = true
         for (displayID, offset) in offsets {
             guard let window = windows[displayID] else { continue }
-            let height = layouts[displayID]?.barFrame.height ?? collapsedHeight(displayID)
-            let fraction = height > 0 ? Double(1 + offset / height) : 1
-            window.canvas.setSlide(offset: offset, opacity: Float(DockMotion.openingOpacity(fraction)))
+            window.canvas.setSlide(offset: offset)
             if abs(offset) > 0.5 { settledIn = false }
         }
         if settledIn, gesture == nil, phase == .opening || phase == .open {
@@ -552,7 +623,7 @@ final class MissionControlOverlay {
                 window.canvas.fadeSlide(to: 1, duration: DockMotion.open.duration * 0.8)
                 continue
             }
-            window.canvas.animateSlide(from: from, to: 0, timing: DockMotion.open, reference: time, opacity: DockMotion.openingOpacity)
+            window.canvas.animateSlide(from: from, to: 0, timing: DockMotion.open, reference: time)
         }
         phase = .opening
     }
@@ -580,14 +651,11 @@ final class MissionControlOverlay {
         reader.start(dockPID: dock.processIdentifier)
         let now = CACurrentMediaTime()
         for window in windows.values {
-            let fromOpacity = Double(window.canvas.presentedOpacity)
             // Undo the names' growth for the way out.
             if let id = windows.first(where: { $0.value === window })?.key, let layout = layouts[id], !Self.isCollapsed(layout) {
                 render(layout, transition: .resize(at: now, duration: 0.06), fadeNew: false)
             }
-            window.canvas.animateSlide(from: window.canvas.presentedOffset, to: 0, timing: DockMotion.reverse, reference: time) { progress in
-                fromOpacity + (1 - fromOpacity) * progress
-            }
+            window.canvas.animateSlide(from: window.canvas.presentedOffset, to: 0, timing: DockMotion.reverse, reference: time)
         }
         reversalEndsAt = time + DockMotion.reverse.end
         phase = .opening
@@ -639,31 +707,36 @@ final class MissionControlOverlay {
         phase = .opening
     }
 
-    private func startClose(reference: CFTimeInterval, afterClick: Bool = false) {
+    /// Slides the names out with the bar on every display (but `skipping`, whose names a
+    /// zooming desktop covers), each on its bar's own timing: only the display under the
+    /// pointer shows thumbnails.
+    private func startClose(reference: CFTimeInterval, afterClick: Bool = false, skipping: CGDirectDisplayID? = nil) {
         guard phase != .closing else { return }
         phase = .closing
         followsDock = false
-        let expanded = layouts.values.contains { !Self.isCollapsed($0) }
         let grown = expandStartedAt.map { (reference - $0 - DockMotion.expand.delay) / DockMotion.expand.duration } ?? 1
-        var timing = expanded ? DockMotion.closeExpanded : DockMotion.closeCollapsed
-        var distance = 1.0
-        if afterClick, expanded, grown < 1 {
-            (timing, distance) = DockMotion.closeExpandedAfterClick(expandProgress: grown)
-        } else if afterClick {
-            timing = expanded ? DockMotion.closeExpandedAfterClick : DockMotion.closeCollapsedAfterClick
-        }
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        for window in windows.values {
+        var end = reference
+        for (id, window) in windows where id != skipping {
+            let expanded = layouts[id].map { !Self.isCollapsed($0) } ?? false
+            var timing = expanded ? DockMotion.closeExpanded : DockMotion.closeCollapsed
+            var distance = 1.0
+            if afterClick, expanded, grown < 1 {
+                (timing, distance) = DockMotion.closeExpandedAfterClick(expandProgress: grown)
+            } else if afterClick {
+                timing = expanded ? DockMotion.closeExpandedAfterClick : DockMotion.closeCollapsedAfterClick
+            }
+            end = max(end, reference + timing.end)
             if reduceMotion {
                 window.canvas.fadeSlide(to: 0, duration: timing.duration * 0.8)
             } else {
                 if expanded { window.canvas.growLabels(toHeight: 24, duration: 0.06) }
                 let height = barHeight(for: window) * distance
-                window.canvas.animateSlide(from: window.canvas.presentedOffset, to: -height, timing: timing, reference: reference, opacity: DockMotion.closingOpacity)
+                window.canvas.animateSlide(from: window.canvas.presentedOffset, to: -height, timing: timing, reference: reference)
             }
         }
-        closeEndsAt = reference + timing.end
-        scheduleEnd(at: reference + timing.end)
+        closeEndsAt = end
+        scheduleEnd(at: end)
     }
 
     private func scheduleEnd(at hostTime: CFTimeInterval) {
@@ -699,6 +772,7 @@ final class MissionControlOverlay {
         expandStartedAt = nil
         finishing = nil
         finishEndWork?.cancel()
+        neverShownWork?.cancel()
         interfaceShown = false
         switchingWork?.cancel()
         switchingTo = nil
@@ -724,10 +798,9 @@ final class MissionControlOverlay {
     }
 
     private func setFraction(_ fraction: Double, direction: Gesture.Direction) {
-        let opacity = DockMotion.openingOpacity(fraction)
         for window in windows.values {
             let height = direction == .opening ? collapsedHeight(for: window) : barHeight(for: window)
-            window.canvas.setSlide(offset: -CGFloat(1 - fraction) * height, opacity: Float(opacity))
+            window.canvas.setSlide(offset: -CGFloat(1 - fraction) * height)
         }
     }
 
@@ -741,6 +814,7 @@ final class MissionControlOverlay {
 
     private var finishing: Finishing?
     private var finishEndWork: DispatchWorkItem?
+    private var neverShownWork: DispatchWorkItem?
     /// The Dock's frames show its reported position a little after it reports it.
     private static let finishDisplayLag: CFTimeInterval = 0.009
 
@@ -763,23 +837,42 @@ final class MissionControlOverlay {
             window.canvas.animateSlide(
                 reference: time,
                 duration: duration + lag,
-                offset: { -CGFloat(1 - fractionIn($0)) * height },
-                opacity: { Float(DockMotion.openingOpacity(fractionIn($0))) }
+                offset: { -CGFloat(1 - fractionIn($0)) * height }
             )
         }
         phase = opening ? .opening : .closing
-        if !opening { closeEndsAt = time + duration }
+        // A close the fingers started can't be turned around (the Dock ignores swipes and
+        // keys until it has finished), unlike a timed one.
+        closeEndsAt = 0
         finishEndWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, let current = finishing, current.model.reference == model.reference else { return }
             finishing = nil
             followsDock = false
-            if opening { phase = .open } else { endSession() }
+            if opening {
+                phase = .open
+                closeIfNeverShown()
+            } else {
+                endSession()
+            }
         }
         finishEndWork = work
         // Closing ends when the Dock's interface goes; this is only in case that's missed.
         let end = time + duration + lag + (opening ? 0 : 0.25)
         DispatchQueue.main.asyncAfter(deadline: .now() + max(0, end - CACurrentMediaTime()), execute: work)
+    }
+
+    /// Mission Control should be up by the time a swipe has opened it. If it never came
+    /// (the Dock let the swipe go without a word), take the names away again.
+    private func closeIfNeverShown() {
+        neverShownWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, phase == .open, gesture == nil, !interfaceShown else { return }
+            log.debug("Mission Control never came; taking the names away")
+            startClose(reference: CACurrentMediaTime())
+        }
+        neverShownWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
     }
 
     /// Keeps the mirrored spring on the Dock's: re-anchored on the Dock's position if they
@@ -1041,10 +1134,15 @@ final class MissionControlOverlay {
         switch target {
         case .control:
             return
-        case .desktop(_, _, _, false):
+        case .desktop(let display, _, _, false):
             // That desktop zooms up over the bar, which hides the names where they are,
-            // the windows having been moved under the zoom on the way down.
-            phase = .closing
+            // the window having been moved under the zoom on the way down. Any other
+            // display's bar just slides away.
+            if windows.count > 1 {
+                startClose(reference: time, afterClick: true, skipping: display)
+            } else {
+                phase = .closing
+            }
         case .desktop, .background:
             // The bar slides away, just as it does when leaving with a key.
             startClose(reference: time, afterClick: true)
@@ -1096,8 +1194,10 @@ final class MissionControlOverlay {
         if label.minY < bar.minY { label.origin.y += bar.height }
         return LabelGeometry(
             center: CGPoint(x: label.midX - origin.x, y: label.midY - origin.y),
-            // Wide enough to keep the Dock's label covered through any timing jitter.
-            size: CGSize(width: label.width + 8, height: label.height),
+            // The Dock's highlight behind the current desktop's name reaches 10 pt beyond
+            // the frame it reports on either side; cover that, and a point more for any
+            // timing jitter, however short the name.
+            size: CGSize(width: label.width + 22, height: label.height),
             textScale: 1
         )
     }

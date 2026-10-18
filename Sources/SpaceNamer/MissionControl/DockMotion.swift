@@ -57,21 +57,6 @@ enum DockMotion {
     /// Used when we only learn about Mission Control once it has finished opening.
     static let lateFade: CFTimeInterval = 0.16
 
-    /// How far into a slide (0...1) the labels reach full opacity when appearing, and
-    /// start fading when leaving. Both happen while the labels are at the screen edge:
-    /// a pill that is see-through while on screen would let the Dock's label show.
-    static let fadeInEnd = 0.3
-    static let fadeOutStart = 0.85
-
-    /// Opacity for a given slide progress, shared by timed and gesture-driven motion.
-    static func openingOpacity(_ progress: Double) -> Double {
-        smoothstep(min(max(progress / fadeInEnd, 0), 1))
-    }
-
-    static func closingOpacity(_ progress: Double) -> Double {
-        1 - smoothstep(min(max((progress - fadeOutStart) / (1 - fadeOutStart), 0), 1))
-    }
-
     private static func smoothstep(_ x: Double) -> Double { x * x * (3 - 2 * x) }
 }
 

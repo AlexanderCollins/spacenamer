@@ -187,6 +187,11 @@ final class SpacesBarReader: @unchecked Sendable {
         guard moved || now - lastFullRead >= Self.fullReadInterval || lastLayouts.isEmpty else { return }
 
         lastFullRead = now
+        // Should the Dock build one display's bar after another's, pick up the rest.
+        if bars.count < Self.displayCount() {
+            let found = resolveBars()
+            if found.count > bars.count { bars = found }
+        }
         guard let layouts = readLayouts() else {
             bars = []
             missionControl = nil
@@ -285,6 +290,11 @@ final class SpacesBarReader: @unchecked Sendable {
               let rect = Self.rect(from: array[2])
         else { return nil }
         return Label(element: Int(bitPattern: UInt(CFHash(button))), title: array[1] as? String ?? "", frame: rect)
+    }
+
+    private static func displayCount() -> Int {
+        var count: UInt32 = 0
+        return CGGetActiveDisplayList(0, nil, &count) == .success ? Int(count) : 0
     }
 
     private func attribute(_ element: AXUIElement, _ name: String) -> AnyObject? {
