@@ -30,7 +30,8 @@ is injected into other apps, and no system files are modified.
 - **Scriptable.** A `spacenamer://` URL scheme for Shortcuts, Raycast, Alfred and shell scripts.
 - **Coding agents.** Each Claude Code session (or any agent, through MCP) shows on the desktop
   its terminal is on: working, needs you, done or failed. Desktops take their chat's title as a
-  name, and new chats take their desktop's. See [Coding agents](#coding-agents).
+  name (and `/rename` renames the desktop), and new chats take their desktop's. See
+  [Coding agents](#coding-agents).
 - **Update notice.** When there are newer changes on GitHub, a small green arrow appears next to
   the name in the menu bar, and the menu lists what's new (each change opens on GitHub) with
   **Update SpaceNamer…** to pull and rebuild.
@@ -113,9 +114,10 @@ switcher it gets a coloured dot and a few words ("Needs you · Wants to use Bash
 bar gets a dot whenever any desktop needs you, failed or finished. Done and failed clear once
 you've been on that desktop for a moment.
 
-**Names.** A desktop you haven't named takes its chat's title (the one you gave it with
-`/rename`, or Claude Code's own), and follows it when it changes. A new chat on a desktop you
-*have* named takes the desktop's name. Names you give desktops are never replaced. Both can be
+**Names.** A desktop you haven't named takes its chat's title (Claude Code's own, or the one
+you gave it), and follows it when it changes. Renaming a chat with `/rename` renames its desktop
+straight away, even one you'd named; Claude Code's own titles never replace a name you gave a
+desktop. A new chat on a desktop you named takes the desktop's name. Both directions can be
 turned off in **Settings → Agents**.
 
 **Which desktop.** An agent belongs to the desktop its terminal was on when you started it or

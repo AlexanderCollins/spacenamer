@@ -233,7 +233,7 @@ enum DebugCommands {
         case "/agent":
             // A pretend agent: position=3&state=working&progress=0.4&note=…&title=…
             guard let position = query["position"].flatMap(Int.init), let state = query["state"].flatMap(AgentState.init) else { return }
-            model.agents.inject(position: position, state: state, progress: query["progress"].flatMap(Double.init), note: query["note"], title: query["title"])
+            model.agents.inject(position: position, state: state, progress: query["progress"].flatMap(Double.init), note: query["note"], title: query["title"], transcript: query["transcript"])
         case "/agent-clear":
             model.agents.removeInjected()
         case "/state":

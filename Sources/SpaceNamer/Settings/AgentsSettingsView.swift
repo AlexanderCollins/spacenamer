@@ -63,7 +63,7 @@ struct AgentsSettingsView: View {
                             }
                         }
                     }
-                    Text("A desktop shows its most urgent agent in Mission Control, the menu and the switcher, and the menu bar gets a dot when one needs you, failed or finished. Done and failed clear once you've been to that desktop. Names you give desktops are never replaced by a chat's.")
+                    Text("A desktop shows its most urgent agent in Mission Control, the menu and the switcher, and the menu bar gets a dot when one needs you, failed or finished. Done and failed clear once you've been to that desktop. Renaming a chat (/rename) renames its desktop; Claude's own chat titles never replace a name you gave a desktop.")
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .font(.caption)

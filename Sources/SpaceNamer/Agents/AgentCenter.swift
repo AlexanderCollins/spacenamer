@@ -12,7 +12,9 @@ import SpaceNamerCore
 /// - Done and failed are results waiting to be seen: being on that desktop for a moment
 ///   turns them back to idle.
 /// - Desktops take their agent's chat title as a name (unless the user named them), and
-///   a new chat on a desktop the user named takes the desktop's name.
+///   a new chat on a desktop the user named takes the desktop's name. Renaming a chat
+///   (`/rename`) renames its desktop too, whoever named it: the transcript is watched for
+///   it, since no hook reports it.
 @MainActor
 final class AgentCenter: ObservableObject {
     @Published private(set) var sessions: [Int32: AgentSession] = [:]
@@ -30,6 +32,12 @@ final class AgentCenter: ObservableObject {
     private var visibleSince: [Int32: Date] = [:]
     private var acknowledgeWork: DispatchWorkItem?
     private var titleReadAt: [Int32: Date] = [:]
+    /// Each chat's own title as last seen ("" for none), to tell a rename from the title
+    /// it already had.
+    private var customTitles: [Int32: String] = [:]
+    private var transcriptWatchers: [Int32: (path: String, source: DispatchSourceFileSystemObject)] = [:]
+    private var pendingTitleReads = Set<Int32>()
+    private var watchRetry: Timer?
     private var cancellables = Set<AnyCancellable>()
     private let titleQueue = DispatchQueue(label: "SpaceNamer.ChatTitle", qos: .utility)
     private let log = Logger(subsystem: "com.alexandercollins.SpaceNamer", category: "agents")
@@ -84,9 +92,12 @@ final class AgentCenter: ObservableObject {
             guard ProcessTree.isAlive(pid) else { return AgentReply() }
             watchExit(of: pid)
         }
-        // A new chat in the same process (/clear) starts from scratch.
-        if report.event == .started, report.resumed != true, session.sessionID != nil, session.sessionID != report.session {
-            session = AgentSession(pid: pid, source: report.source)
+        if report.event == .started, report.resumed != true {
+            // A new chat in the same process (/clear) starts from scratch, without a title.
+            if session.sessionID != nil, session.sessionID != report.session {
+                session = AgentSession(pid: pid, source: report.source)
+            }
+            customTitles[pid] = ""
         }
         bind(&session, report)
         session.apply(report)
@@ -102,13 +113,20 @@ final class AgentCenter: ObservableObject {
 
         sessions[pid] = session
         log.debug("\(report.source, privacy: .public) \(report.event.rawValue, privacy: .public) from \(pid): \(session.state.rawValue, privacy: .public), desktop \(session.space.flatMap { self.model.snapshot.space(forKey: $0)?.position } ?? 0)")
-        if let key = session.space, let space = model.snapshot.space(forKey: key) {
+        // Only a title that's there counts: most hooks don't say what the chat is called,
+        // and its transcript, read next, does.
+        if let title = report.title {
+            noteChat(ChatTitle(title: title, isCustom: true), of: pid)
+        } else {
+            nameDesktop(after: session)
+        }
+        watchTranscript(of: pid)
+        readTitle(of: pid, force: [.started, .prompted, .done].contains(report.event))
+        if let key = sessions[pid]?.space, let space = model.snapshot.space(forKey: key) {
             reply.desktop = model.title(for: space)
             reply.desktopNumber = space.position
             reply.desktopNamed = model.hasCustomName(space)
         }
-        nameDesktop(after: session)
-        readTitle(of: pid, force: [.started, .prompted, .done].contains(report.event))
         publish()
         noteVisibility()
         return reply
@@ -143,8 +161,11 @@ final class AgentCenter: ObservableObject {
 
     private func remove(_ pid: Int32) {
         exitWatchers.removeValue(forKey: pid)?.cancel()
+        transcriptWatchers.removeValue(forKey: pid)?.source.cancel()
         visibleSince[pid] = nil
         titleReadAt[pid] = nil
+        customTitles[pid] = nil
+        pendingTitleReads.remove(pid)
         guard sessions.removeValue(forKey: pid) != nil else { return }
         publish()
     }
@@ -222,27 +243,114 @@ final class AgentCenter: ObservableObject {
         return model.title(for: space)
     }
 
-    /// Names the session's desktop after its chat, unless the user named the desktop or a
-    /// more recently active agent there has a title of its own.
-    private func nameDesktop(after session: AgentSession) {
+    /// Takes in what a chat is called now (nil: no title yet). A title the user gave the
+    /// chat that differs from the one it had is a rename, made just now.
+    private func noteChat(_ title: ChatTitle?, of pid: Int32) {
+        guard var session = sessions[pid] else { return }
+        let custom = title?.isCustom == true ? title?.title ?? "" : ""
+        let renamed = !custom.isEmpty && customTitles[pid].map { $0 != custom } == true
+        if !custom.isEmpty || customTitles[pid] == nil { customTitles[pid] = custom }
+        // A title the user gave the chat beats a generated one.
+        if let title, title.isCustom || session.chat?.isCustom != true, session.chat != title {
+            session.chat = title
+            sessions[pid] = session
+            log.debug("chat \(pid) is \"\(title.title, privacy: .public)\"\(renamed ? " (renamed)" : "", privacy: .public)")
+        }
+        nameDesktop(after: session, renamed: renamed)
+    }
+
+    /// Names the session's desktop after its chat. A chat the user just renamed renames
+    /// its desktop as if they'd done it there; otherwise only a desktop they haven't named
+    /// follows its chat, the most recently active one if it has several.
+    private func nameDesktop(after session: AgentSession, renamed: Bool = false) {
         guard model.preferences.nameDesktopsFromChats, let key = session.space, let chat = session.chat,
-              !model.store.hasUserName(key), let space = model.snapshot.space(forKey: key)
+              let space = model.snapshot.space(forKey: key), model.store.name(for: key) != chat.title
         else { return }
+        if renamed, chat.isCustom {
+            model.rename(space, to: chat.title)
+            return
+        }
+        guard !model.store.hasUserName(key) else { return }
         let latest = sessions.values.filter { $0.space == key && $0.chat != nil }.max { $0.updated < $1.updated }
-        guard latest?.pid == session.pid, model.store.name(for: key) != chat.title else { return }
+        guard latest?.pid == session.pid else { return }
         model.store.setName(chat.title, for: space, automatic: true)
+    }
+
+    /// Re-reads a chat's title whenever its transcript changes: renaming a chat writes it
+    /// there, but no hook reports it.
+    private func watchTranscript(of pid: Int32) {
+        guard let path = sessions[pid]?.transcript else { return }
+        if let watcher = transcriptWatchers[pid] {
+            if watcher.path == path { return }
+            watcher.source.cancel()
+            transcriptWatchers[pid] = nil
+        }
+        let descriptor = open(path, O_EVTONLY)
+        guard descriptor >= 0 else {
+            // Claude Code writes the transcript with its first record.
+            retryWatching()
+            return
+        }
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: [.write, .extend, .delete, .rename], queue: .main)
+        source.setEventHandler { [weak self, weak source] in
+            MainActor.assumeIsolated {
+                guard let self, let source else { return }
+                if !source.data.isDisjoint(with: [.delete, .rename]) {
+                    source.cancel()
+                    self.transcriptWatchers[pid] = nil
+                    self.retryWatching()
+                } else {
+                    self.scheduleTitleRead(of: pid)
+                }
+            }
+        }
+        source.setCancelHandler { close(descriptor) }
+        source.resume()
+        transcriptWatchers[pid] = (path, source)
+        scheduleTitleRead(of: pid)
+    }
+
+    /// Transcripts change with every message, so reads are gathered up.
+    private func scheduleTitleRead(of pid: Int32) {
+        guard pendingTitleReads.insert(pid).inserted else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.pendingTitleReads.remove(pid)
+                self.readTitle(of: pid, force: true)
+            }
+        }
+    }
+
+    /// Looks every couple of seconds for transcripts that don't exist yet.
+    private func retryWatching() {
+        guard watchRetry == nil else { return }
+        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] timer in
+            MainActor.assumeIsolated {
+                guard let self else { return timer.invalidate() }
+                let waiting = self.sessions.filter { $0.value.transcript != nil && self.transcriptWatchers[$0.key] == nil }.map(\.key)
+                self.watchRetry = nil
+                waiting.forEach { self.watchTranscript(of: $0) }
+                if self.watchRetry == nil { timer.invalidate() } else { self.watchRetry = timer }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        watchRetry = timer
     }
 
     #if DEBUG
     /// A pretend agent on the desktop at `position`, to try the display without one.
-    func inject(position: Int, state: AgentState, progress: Double?, note: String?, title: String?) {
+    /// With a `transcript`, it's a new chat whose title is read (and watched) from there.
+    func inject(position: Int, state: AgentState, progress: Double?, note: String?, title: String?, transcript: String?) {
         guard let space = model.snapshot.space(atPosition: position) else { return }
         let pid = Int32(-position)
         var session = sessions[pid] ?? AgentSession(pid: pid, source: "debug")
         session.space = space.key
-        session.apply(AgentReport(event: .status, source: "debug", title: title, state: state, note: note, progress: progress))
+        session.apply(AgentReport(event: .status, source: "debug", transcript: transcript, title: title, state: state, note: note, progress: progress))
         sessions[pid] = session
+        if transcript != nil, customTitles[pid] == nil { customTitles[pid] = "" }
         nameDesktop(after: session)
+        watchTranscript(of: pid)
         publish()
         noteVisibility()
     }
@@ -250,10 +358,11 @@ final class AgentCenter: ObservableObject {
     /// Removes pretend agents, and the names their chats gave desktops.
     func removeInjected() {
         for (pid, session) in sessions where pid < 0 {
-            if let key = session.space, let space = model.snapshot.space(forKey: key), !model.store.hasUserName(key) {
+            if let key = session.space, let space = model.snapshot.space(forKey: key),
+               !model.store.hasUserName(key) || model.store.name(for: key) == session.chat?.title {
                 model.store.setName(nil, for: space)
             }
-            sessions[pid] = nil
+            remove(pid)
         }
         publish()
     }
@@ -269,13 +378,8 @@ final class AgentCenter: ObservableObject {
             let title = ChatTitle.read(transcript: URL(fileURLWithPath: path), session: id)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    guard let self, let title, var session = self.sessions[pid], session.sessionID == id else { return }
-                    // A title the user gave the chat beats a generated one.
-                    guard title.isCustom || session.chat?.isCustom != true, session.chat != title else { return }
-                    session.chat = title
-                    self.sessions[pid] = session
-                    self.log.debug("chat \(pid) is \"\(title.title, privacy: .public)\"")
-                    self.nameDesktop(after: session)
+                    guard let self, self.sessions[pid]?.sessionID == id else { return }
+                    self.noteChat(title, of: pid)
                 }
             }
         }
