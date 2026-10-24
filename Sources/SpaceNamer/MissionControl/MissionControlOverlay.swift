@@ -1012,25 +1012,29 @@ final class MissionControlOverlay {
         let primaryHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
         let origin = CGPoint(x: screen.frame.minX, y: primaryHeight - screen.frame.maxY)
 
-        let geometries = layout.labels.map { Self.geometry(for: $0.frame, bar: layout.barFrame, origin: origin) }
+        let geometries = layout.labels.map { Self.geometry(for: $0, bar: layout.barFrame, origin: origin) }
         let names: [String?] = spaces.map { space in space.flatMap { model.store.name(for: $0.key) } }
-        let widths = OverlayCanvas.layoutWidths(
-            centers: geometries.map(\.center.x),
-            baseWidths: geometries.map(\.size.width),
-            names: names,
-            textScale: geometries.map(\.textScale),
-            nativeWidths: layout.labels.map { $0.frame.height >= 40 ? 59 : $0.frame.width }
-        )
+        let pills = PillLayout.layout(layout.labels.indices.map { index in
+            let geometry = geometries[index]
+            guard let name = names[index] else {
+                return PillLayout.Item(center: geometry.center.x, cover: Self.dockLabelWidth(layout.labels[index]), fit: nil)
+            }
+            return PillLayout.Item(center: geometry.center.x, cover: geometry.size.width, fit: OverlayCanvas.fit(for: name, textScale: geometry.textScale))
+        }, within: PillLayout.gap...(screen.frame.width - PillLayout.gap))
 
         var targets: [OverlayCanvas.Target] = []
         for (index, space) in spaces.enumerated() {
-            guard let space, let name = names[index], layout.labels[index].element != draggedElement else { continue }
+            guard let space, let name = names[index], let pill = pills[index],
+                  layout.labels[index].element != draggedElement
+            else { continue }
+            var geometry = geometries[index]
+            geometry.center.x = pill.center
+            geometry.size.width = pill.width
             targets.append(OverlayCanvas.Target(
                 key: space.key,
                 name: name,
                 isCurrent: switchingTo.map { $0 == space.key } ?? (space.managedID == display.currentManagedID),
-                geometry: geometries[index],
-                maxWidth: widths[index]
+                geometry: geometry
             ))
         }
         window.canvas.update(targets, transition: transition, fadeNew: fadeNew)
@@ -1171,7 +1175,7 @@ final class MissionControlOverlay {
                     let remove = CGRect(x: label.frame.minX - 14, y: label.frame.minY - 14, width: 28, height: 28)
                     if remove.contains(location) { return .control }
                 }
-                let area = isThumbnail ? label.frame : Self.geometry(for: label.frame, bar: layout.barFrame, origin: .zero).hitRect
+                let area = isThumbnail ? label.frame : Self.geometry(for: label, bar: layout.barFrame, origin: .zero).hitRect
                 guard area.contains(location) else { continue }
                 let display = displaySpaces(for: layout.displayID)
                 let space = display.flatMap { spacesForLabels(layout, display: $0)[index] }
@@ -1235,30 +1239,43 @@ final class MissionControlOverlay {
         layout.labels.allSatisfy { $0.frame.height < 40 }
     }
 
+    /// How much smaller the Dock draws names under thumbnails.
+    private static let thumbnailTextScale: CGFloat = 0.877
+
     /// Where the Dock draws a Space's name, from the frame it reports for that Space.
     ///
     /// Collapsed, the bar shows only names and the reported frame is the name's pill,
     /// though current releases report it one bar-height too high. Expanded (hovered),
-    /// the frame is the thumbnail and the name, drawn about 12% smaller, sits centred
-    /// 14 pt below it (measured from screen captures).
-    static func geometry(for frame: CGRect, bar: CGRect, origin: CGPoint) -> LabelGeometry {
+    /// the frame is the thumbnail and the name, drawn about 12% smaller, sits 14.5 pt
+    /// above the bottom of the bar whatever the thumbnails' size (measured from screen
+    /// captures with 7 and 11 desktops).
+    static func geometry(for label: SpacesBarReader.Label, bar: CGRect, origin: CGPoint) -> LabelGeometry {
+        let frame = label.frame
         if frame.height >= 40 {
             return LabelGeometry(
-                center: CGPoint(x: frame.midX - origin.x, y: frame.maxY + 14 - origin.y),
-                size: CGSize(width: 67, height: 18),
-                textScale: 0.877
+                center: CGPoint(x: frame.midX - origin.x, y: bar.maxY - 14.5 - origin.y),
+                // Room for "Desktop 10" and up, too.
+                size: CGSize(width: max(67, dockLabelWidth(label) + 6), height: 18),
+                textScale: thumbnailTextScale
             )
         }
-        var label = frame
-        if label.minY < bar.minY { label.origin.y += bar.height }
+        var name = frame
+        if name.minY < bar.minY { name.origin.y += bar.height }
         return LabelGeometry(
-            center: CGPoint(x: label.midX - origin.x, y: label.midY - origin.y),
+            center: CGPoint(x: name.midX - origin.x, y: name.midY - origin.y),
             // The Dock's highlight behind the current desktop's name reaches 10 pt beyond
             // the frame it reports on either side; cover that, and a point more for any
             // timing jitter, however short the name.
-            size: CGSize(width: label.width + 22, height: label.height),
+            size: CGSize(width: name.width + 22, height: name.height),
             textScale: 1
         )
+    }
+
+    /// How wide the Dock's own name for a Space is. Under a thumbnail it isn't reported,
+    /// so it's measured from the title, as the Dock draws it there.
+    static func dockLabelWidth(_ label: SpacesBarReader.Label) -> CGFloat {
+        guard label.frame.height >= 40 else { return label.frame.width }
+        return max(59, ceil(NameLabelLayer.textWidth(of: label.title) * thumbnailTextScale) + 2)
     }
 
     /// Pairs labels with Spaces. Labels list Spaces in order, so match by position when the

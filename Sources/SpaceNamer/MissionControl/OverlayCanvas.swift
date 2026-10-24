@@ -271,8 +271,8 @@ final class OverlayCanvas {
         let key: SpaceKey
         let name: String
         let isCurrent: Bool
+        /// Already laid out against its neighbours (see `PillLayout`).
         let geometry: LabelGeometry
-        let maxWidth: CGFloat
     }
 
     /// Brings the labels in line with `targets`. Existing labels move with `transition`
@@ -282,13 +282,13 @@ final class OverlayCanvas {
         for target in targets {
             seen.insert(target.key)
             if let label = labels[target.key], !label.isLeaving {
-                label.setContent(name: target.name, isCurrent: target.isCurrent, width: target.maxWidth, textScale: target.geometry.textScale)
-                label.move(to: geometry(fitting: target, label: label), transition: transition)
+                label.setContent(name: target.name, isCurrent: target.isCurrent, width: target.geometry.size.width, textScale: target.geometry.textScale)
+                label.move(to: target.geometry, transition: transition)
             } else {
                 labels[target.key]?.removeFromSuperlayer()
                 let label = NameLabelLayer(scale: scale, style: style)
-                label.setContent(name: target.name, isCurrent: target.isCurrent, width: target.maxWidth, textScale: target.geometry.textScale)
-                label.move(to: geometry(fitting: target, label: label), transition: nil)
+                label.setContent(name: target.name, isCurrent: target.isCurrent, width: target.geometry.size.width, textScale: target.geometry.textScale)
+                label.move(to: target.geometry, transition: nil)
                 slide.addSublayer(label)
                 labels[target.key] = label
                 if fadeNew { label.fade(from: 0, to: 1, duration: 0.14) }
@@ -311,58 +311,19 @@ final class OverlayCanvas {
         labels.removeAll()
     }
 
-    /// The target's width already accounts for text and neighbours (see `layoutWidths`).
-    private func geometry(fitting target: Target, label: NameLabelLayer) -> LabelGeometry {
-        var geometry = target.geometry
-        geometry.size.width = target.maxWidth
-        return geometry
-    }
-
-    /// Horizontal padding inside a pill, either side of the text, at full scale.
+    /// Horizontal padding inside a pill, either side of the text, at full scale: as much
+    /// as the pill usually has, and as little as it has before the text is cut short.
     static let padding: CGFloat = 9
+    static let snugPadding: CGFloat = 5
+    private static let maximumWidth: CGFloat = 260
 
-    /// Pill widths for one bar: each pill wants room for its text (and to cover the
-    /// Dock's label under it); neighbours that would collide share the gap between them
-    /// in proportion, and no pill reaches over an unnamed neighbour's label.
-    static func layoutWidths(
-        centers: [CGFloat],
-        baseWidths: [CGFloat],
-        names: [String?],
-        textScale: [CGFloat],
-        nativeWidths: [CGFloat]
-    ) -> [CGFloat] {
-        var widths = names.indices.map { index -> CGFloat in
-            guard let name = names[index] else { return nativeWidths[index] }
-            let text = NameLabelLayer.textWidth(of: name) * textScale[index]
-            return min(max(baseWidths[index], ceil(text) + 2 * padding * textScale[index]), 260)
-        }
-        for index in 0..<max(0, widths.count - 1) {
-            let gap = centers[index + 1] - centers[index] - 6
-            let left = widths[index] / 2, right = widths[index + 1] / 2
-            guard left + right > gap, gap > 0 else { continue }
-            switch (names[index] != nil, names[index + 1] != nil) {
-            case (true, true):
-                // Take the room from the length beyond each one's minimum, so a short name
-                // keeps covering the Dock's label; scale both only if even that won't fit.
-                let spareLeft = left - baseWidths[index] / 2, spareRight = right - baseWidths[index + 1] / 2
-                let excess = left + right - gap
-                if spareLeft + spareRight >= excess {
-                    widths[index] = 2 * (left - excess * spareLeft / (spareLeft + spareRight))
-                    widths[index + 1] = 2 * (right - excess * spareRight / (spareLeft + spareRight))
-                } else {
-                    let scale = gap / (left + right)
-                    widths[index] = 2 * left * scale
-                    widths[index + 1] = 2 * right * scale
-                }
-            case (true, false):
-                widths[index] = 2 * max(gap - right, baseWidths[index] / 2)
-            case (false, true):
-                widths[index + 1] = 2 * max(gap - left, baseWidths[index + 1] / 2)
-            case (false, false):
-                break
-            }
-        }
-        return widths
+    /// The pill widths that fit `name` at `textScale`.
+    static func fit(for name: String, textScale: CGFloat) -> PillLayout.Fit {
+        let text = ceil(NameLabelLayer.textWidth(of: name) * textScale)
+        return PillLayout.Fit(
+            snug: min(text + 2 * snugPadding * textScale, maximumWidth),
+            comfortable: min(text + 2 * padding * textScale, maximumWidth)
+        )
     }
 
     private func withoutAnimation(_ body: () -> Void) {
@@ -429,7 +390,7 @@ final class NameLabelLayer: CALayer {
     static let highlightFade: CFTimeInterval = 0.1
 
     func setContent(name: String, isCurrent: Bool, width: CGFloat, textScale: CGFloat) {
-        let room = max(10, width / max(textScale, 0.1) - 2 * OverlayCanvas.padding + 2)
+        let room = max(10, width / max(textScale, 0.1) - 2 * OverlayCanvas.snugPadding + 2)
         if name != labelName || room != textRoom {
             labelName = name
             textRoom = room
