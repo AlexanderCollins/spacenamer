@@ -236,6 +236,13 @@ enum DebugCommands {
             model.agents.inject(position: position, state: state, progress: query["progress"].flatMap(Double.init), note: query["note"], title: query["title"], transcript: query["transcript"])
         case "/agent-clear":
             model.agents.removeInjected()
+        case "/agents":
+            let lines = model.agents.sessions.values.sorted { $0.pid < $1.pid }.map { session -> String in
+                let space = session.space.flatMap(model.snapshot.space(forKey:))
+                let desktop = space.map { "\($0.position ?? 0) \(model.title(for: $0))" } ?? "-"
+                return "\(session.pid) \(session.state.rawValue) desktop=\(desktop) chat=\(session.chat?.title ?? "-") note=\(session.note ?? "-")"
+            }
+            write(lines.joined(separator: "\n"), to: output)
         case "/state":
             let snapshot = model.snapshot
             var lines = ["canPost=\(EventSynth.canPost) displays=\(snapshot.displays.count)"]

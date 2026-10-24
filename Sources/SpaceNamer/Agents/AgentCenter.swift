@@ -7,8 +7,11 @@ import SpaceNamerCore
 /// server, scripts) and the desktop each one's terminal is on, for the menu bar, the menu,
 /// the switcher and Mission Control to show.
 ///
-/// - A session belongs to the desktop its terminal was on when the user last typed into
-///   it, and keeps it until the terminal's window is no longer there.
+/// - Claude Code sessions are followed through the status files Claude Code keeps for each
+///   (so even sessions started before the plugin show), and through the plugin's hooks.
+/// - A session belongs to the desktop of the terminal window showing it, where the
+///   terminal app can say (iTerm2, Terminal); otherwise to the desktop its terminal was on
+///   when the user last typed into it, until the terminal's window is no longer there.
 /// - Done and failed are results waiting to be seen: being on that desktop for a moment
 ///   turns them back to idle.
 /// - Desktops take their agent's chat title as a name (unless the user named them), and
@@ -38,6 +41,11 @@ final class AgentCenter: ObservableObject {
     private var transcriptWatchers: [Int32: (path: String, source: DispatchSourceFileSystemObject)] = [:]
     private var pendingTitleReads = Set<Int32>()
     private var watchRetry: Timer?
+    private let terminals = TerminalLocator()
+    private var fileTimer: Timer?
+    /// What each Claude Code status file last said, to act only on changes.
+    private var fileSignatures: [Int32: String] = [:]
+    private var transcriptPaths: [String: (path: String?, lookedAt: Date)] = [:]
     private var cancellables = Set<AnyCancellable>()
     private let titleQueue = DispatchQueue(label: "SpaceNamer.ChatTitle", qos: .utility)
     private let log = Logger(subsystem: "com.alexandercollins.SpaceNamer", category: "agents")
@@ -51,10 +59,72 @@ final class AgentCenter: ObservableObject {
             MainActor.assumeIsolated { self?.handle(report) ?? AgentReply(error: "SpaceNamer is quitting.") }
         }
         linkHelper()
+        terminals.onChange = { [weak self] in self?.rebindToWindows() }
         model.$snapshot
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.noteVisibility() }
+            .sink { [weak self] _ in
+                self?.rebindToWindows()
+                self?.noteVisibility()
+            }
             .store(in: &cancellables)
+
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.readSessionFiles() }
+        }
+        timer.tolerance = 0.2
+        RunLoop.main.add(timer, forMode: .common)
+        fileTimer = timer
+        readSessionFiles()
+    }
+
+    // MARK: Claude Code status files
+
+    private func readSessionFiles() {
+        for record in ClaudeSessionFiles.read() {
+            let signature = [record.sessionID, record.status, record.waitingFor, record.name, record.nameSource, record.statusUpdatedAt.map { "\($0)" }]
+                .map { $0 ?? "" }.joined(separator: "|")
+            guard fileSignatures[record.pid] != signature, ProcessTree.isAlive(record.pid) else { continue }
+            fileSignatures[record.pid] = signature
+            var report = ClaudeSessionFiles.report(for: record, previous: sessions[record.pid]?.state)
+            report.transcript = record.sessionID.flatMap(transcriptPath(forSession:))
+            if sessions[record.pid] != nil, sessions[record.pid]?.sessionID != record.sessionID {
+                // Seen from the file, a new chat in the same process (/clear) has no title yet.
+                report.event = report.event == .query ? .started : report.event
+            }
+            // The file names the chat whenever the user has, so no name means none yet.
+            if record.customName == nil, customTitles[record.pid] == nil { customTitles[record.pid] = "" }
+            _ = handle(report, fromStatusFile: true)
+        }
+    }
+
+    /// A session's transcript, wherever Claude Code keeps its project.
+    private func transcriptPath(forSession id: String) -> String? {
+        if let known = transcriptPaths[id], known.path != nil || Date().timeIntervalSince(known.lookedAt) < 10 { return known.path }
+        let projects = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects", isDirectory: true)
+        let folders = (try? FileManager.default.contentsOfDirectory(at: projects, includingPropertiesForKeys: nil)) ?? []
+        let path = folders.lazy.map { $0.appendingPathComponent("\(id).jsonl").path }.first { FileManager.default.fileExists(atPath: $0) }
+        transcriptPaths[id] = (path, Date())
+        return path
+    }
+
+    /// Moves sessions to the desktop of the terminal window showing them, where known.
+    private func rebindToWindows() {
+        var changed = false
+        for (pid, session) in sessions {
+            guard let key = windowSpace(of: pid), key != session.space, var moved = sessions[pid] else { continue }
+            moved.space = key
+            sessions[pid] = moved
+            nameDesktop(after: moved)
+            changed = true
+        }
+        if changed { publish() }
+    }
+
+    /// The desktop of the terminal window showing an agent's process, if its terminal app
+    /// can say.
+    private func windowSpace(of pid: Int32) -> SpaceKey? {
+        guard pid > 0, let terminal = ProcessTree.terminal(of: pid) else { return nil }
+        return terminals.window(showing: terminal).flatMap(model.space(ofWindow:))
     }
 
     func status(for space: Space) -> DesktopAgentStatus? {
@@ -79,7 +149,7 @@ final class AgentCenter: ObservableObject {
 
     // MARK: Reports
 
-    private func handle(_ report: AgentReport) -> AgentReply {
+    private func handle(_ report: AgentReport, fromStatusFile: Bool = false) -> AgentReply {
         guard let pid = report.agentPID else { return AgentReply(error: "Couldn't tell which agent this is.") }
 
         if report.event == .ended {
@@ -99,7 +169,7 @@ final class AgentCenter: ObservableObject {
             }
             customTitles[pid] = ""
         }
-        bind(&session, report)
+        bind(&session, report, fromStatusFile: fromStatusFile)
         session.apply(report)
 
         var reply = AgentReply()
@@ -133,7 +203,22 @@ final class AgentCenter: ObservableObject {
     }
 
     /// Works out (or confirms) the desktop a session's terminal is on.
-    private func bind(_ session: inout AgentSession, _ report: AgentReport) {
+    private func bind(_ session: inout AgentSession, _ report: AgentReport, fromStatusFile: Bool) {
+        if let key = windowSpace(of: session.pid) {
+            session.space = key
+            return
+        }
+        // A status file says nothing about where the user is, so only a guess that doesn't
+        // depend on that.
+        if fromStatusFile {
+            if session.space == nil, let terminal = ProcessTree.ancestors(of: session.pid).lazy
+                .compactMap({ NSRunningApplication(processIdentifier: $0.pid) })
+                .first(where: { $0.activationPolicy == .regular }) {
+                let spaces = model.spaces(withWindowsOf: terminal.processIdentifier)
+                if spaces.count == 1 { session.space = spaces.first }
+            }
+            return
+        }
         let snapshot = model.snapshot
         let terminal = report.processes.lazy
             .compactMap { NSRunningApplication(processIdentifier: $0.pid) }

@@ -26,6 +26,19 @@ public enum ProcessTree {
         kill(pid, 0) == 0 || errno == EPERM
     }
 
+    /// The process's name, or nil if it isn't running.
+    public static func name(of pid: pid_t) -> String? {
+        info(for: pid).map(name(of:))
+    }
+
+    /// The terminal the process runs in, e.g. "/dev/ttys001".
+    public static func terminal(of pid: pid_t) -> String? {
+        guard let info = info(for: pid) else { return nil }
+        let device = info.kp_eproc.e_tdev
+        guard device != -1, device != 0, let name = devname(device, S_IFCHR) else { return nil }
+        return "/dev/" + String(cString: name)
+    }
+
     private static func info(for pid: pid_t) -> kinfo_proc? {
         var info = kinfo_proc()
         var size = MemoryLayout<kinfo_proc>.stride

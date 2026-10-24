@@ -290,6 +290,13 @@ final class AppModel: ObservableObject {
         return NSScreen.screens.first { $0.displayID == target } ?? NSScreen.main
     }
 
+    /// The Space a window is on, if it's on just one.
+    func space(ofWindow window: CGWindowID) -> SpaceKey? {
+        let spaces = reader.spaces(forWindow: window)
+        guard spaces.count == 1 else { return nil }
+        return snapshot.allSpaces.first { $0.managedID == spaces[0] }?.key
+    }
+
     /// The Spaces where an app has a window (ignoring windows on every Space).
     func spaces(withWindowsOf pid: pid_t) -> Set<SpaceKey> {
         let options: CGWindowListOption = [.optionAll, .excludeDesktopElements]

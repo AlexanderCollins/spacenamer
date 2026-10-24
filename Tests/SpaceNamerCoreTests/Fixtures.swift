@@ -73,3 +73,11 @@ func mcpResult(_ data: Data?) -> [String: Any]? {
 func mcpText(_ data: Data?) -> String? {
     ((mcpResult(data)?["content"] as? [[String: Any]])?.first)?["text"] as? String
 }
+
+/// A Claude Code status file (~/.claude/sessions/<pid>.json).
+func sessionRecord(_ fields: [String: Any]) -> ClaudeSessionFiles.Record {
+    var all: [String: Any] = ["pid": 42, "sessionId": "s", "statusUpdatedAt": 1_000_000.0]
+    all.merge(fields) { $1 }
+    let data = try! JSONSerialization.data(withJSONObject: all)
+    return try! JSONDecoder().decode(ClaudeSessionFiles.Record.self, from: data)
+}

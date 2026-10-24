@@ -376,3 +376,26 @@ import Testing
         #expect(mcpText(server.handle(mcpRequest(4, "tools/call", ["name": "get_desktop"]))) == "SpaceNamer isn't running.")
     }
 }
+
+@Suite struct ClaudeSessionFilesTests {
+    @Test func mapsStatusesToStates() {
+        let busy = ClaudeSessionFiles.report(for: sessionRecord(["status": "busy"]), previous: nil)
+        #expect(busy.event == .working && busy.agentPID == 42 && busy.time == 1000)
+        let waiting = ClaudeSessionFiles.report(for: sessionRecord(["status": "waiting", "waitingFor": "input needed"]), previous: .working)
+        #expect(waiting.event == .needsInput && waiting.note == "Needs your input")
+        // A slash command's dialog is the user at work, not the agent waiting.
+        #expect(ClaudeSessionFiles.report(for: sessionRecord(["status": "waiting", "waitingFor": "dialog open"]), previous: .idle).event == .query)
+    }
+
+    @Test func idleAfterWorkIsDone() {
+        #expect(ClaudeSessionFiles.report(for: sessionRecord(["status": "idle"]), previous: .working).event == .done)
+        #expect(ClaudeSessionFiles.report(for: sessionRecord(["status": "shell"]), previous: .needsInput).event == .done)
+        #expect(ClaudeSessionFiles.report(for: sessionRecord(["status": "idle"]), previous: nil).event == .query)
+        #expect(ClaudeSessionFiles.report(for: sessionRecord(["status": "idle"]), previous: .done).event == .query)
+    }
+
+    @Test func onlyUserNamesAreTitles() {
+        #expect(ClaudeSessionFiles.report(for: sessionRecord(["name": "spacenamer", "nameSource": "user"]), previous: nil).title == "spacenamer")
+        #expect(ClaudeSessionFiles.report(for: sessionRecord(["name": "ac-24", "nameSource": "derived"]), previous: nil).title == nil)
+    }
+}
