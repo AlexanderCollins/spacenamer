@@ -47,9 +47,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         .sink { [weak self] in self?.updateButton() }
         .store(in: &cancellables)
 
-        model.$hasAccess
+        Publishers.Merge(model.$hasAccess.map { _ in () }, model.updates.$status.map { _ in () })
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.updateButton() }
+            .sink { [weak self] in self?.updateButton() }
             .store(in: &cancellables)
     }
 
@@ -62,6 +62,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             var tooltip = name
             if model.hasCustomName(space) { tooltip += " (\(model.systemName(for: space)))" }
             if !model.hasAccess { tooltip += "\nAccessibility access is needed to switch Spaces." }
+            if model.updates.available != nil { tooltip += "\nAn update is available." }
             button.toolTip = tooltip
             button.setAccessibilityLabel("Current Space: \(name)")
         } else {
@@ -73,6 +74,21 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// Sets a button up to name `space`: the real one, or the twin that draws another
     /// display's menu bar.
     private func show(_ space: Space?, on button: NSStatusBarButton) {
+        showSpace(space, on: button)
+        guard model.updates.available != nil else { return }
+        // After the name, keeping the title's own font and colour; only the mark is green.
+        let title = NSMutableAttributedString(attributedString: button.attributedTitle)
+        let font = button.font ?? NSFont.menuBarFont(ofSize: 0)
+        let mark = NSTextAttachment()
+        mark.image = Badges.update(pointSize: 11)
+        let size = mark.image?.size ?? .zero
+        mark.bounds = NSRect(x: 0, y: round((font.capHeight - size.height) / 2), width: size.width, height: size.height)
+        title.append(NSAttributedString(string: " ", attributes: title.length > 0 ? title.attributes(at: 0, effectiveRange: nil) : [.font: font]))
+        title.append(NSAttributedString(attachment: mark))
+        button.attributedTitle = title
+    }
+
+    private func showSpace(_ space: Space?, on button: NSStatusBarButton) {
         guard let space else {
             button.image = Badges.number("–", filled: false)
             button.title = ""
@@ -108,6 +124,31 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             item.target = self
             item.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: nil)
             menu.addItem(item)
+            menu.addItem(.separator())
+        }
+
+        if let update = model.updates.available {
+            let item = NSMenuItem(title: "Update SpaceNamer…", action: #selector(offerUpdate), keyEquivalent: "")
+            item.target = self
+            item.image = Badges.update()
+            menu.addItem(item)
+            for change in update.changes.prefix(UpdateChecker.listedChanges) {
+                menu.addItem(self.item(for: change, indented: true))
+            }
+            let more = update.changes.count - UpdateChecker.listedChanges
+            if more > 0 {
+                let all = NSMenu()
+                update.changes.forEach { all.addItem(self.item(for: $0, indented: false)) }
+                all.addItem(.separator())
+                let page = NSMenuItem(title: "View All on GitHub", action: #selector(openPage(_:)), keyEquivalent: "")
+                page.target = self
+                page.representedObject = update.page
+                all.addItem(page)
+                let item = NSMenuItem(title: "• and \(more) more", action: nil, keyEquivalent: "")
+                item.indentationLevel = 1
+                item.submenu = all
+                menu.addItem(item)
+            }
             menu.addItem(.separator())
         }
 
@@ -177,6 +218,16 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         return item
     }
 
+    /// A change in an update; choosing it opens the commit on GitHub.
+    private func item(for change: AvailableUpdate.Change, indented: Bool) -> NSMenuItem {
+        let item = NSMenuItem(title: (indented ? "• " : "") + change.summary, action: #selector(openPage(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = change.page
+        item.indentationLevel = indented ? 1 : 0
+        item.toolTip = "Open on GitHub"
+        return item
+    }
+
     private static func header(_ title: String) -> NSMenuItem {
         if #available(macOS 14.0, *) {
             return .sectionHeader(title: title)
@@ -215,5 +266,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     @objc private func grantAccess() {
         model.actions.explainPermission()
+    }
+
+    @objc private func openPage(_ sender: NSMenuItem) {
+        guard let page = sender.representedObject as? URL else { return }
+        NSWorkspace.shared.open(page)
+    }
+
+    @objc private func offerUpdate() {
+        DispatchQueue.main.async { [model] in model.updates.offerUpdate() }
     }
 }

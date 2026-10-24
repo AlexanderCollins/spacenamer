@@ -28,6 +28,9 @@ is injected into other apps, and no system files are modified.
 - **Name on switch.** A small pill at the top of the screen names the Space you're moving to,
   the moment the switch starts. It can be moved or turned off.
 - **Scriptable.** A `spacenamer://` URL scheme for Shortcuts, Raycast, Alfred and shell scripts.
+- **Update notice.** When there are newer changes on GitHub, a small green arrow appears next to
+  the name in the menu bar, and the menu lists what's new (each change opens on GitHub) with
+  **Update SpaceNamer…** to pull and rebuild.
 
 ## Install
 
@@ -43,6 +46,9 @@ make install   # builds a universal app, copies it to /Applications and opens it
 
 `make app` builds `build/SpaceNamer.app` without installing it, and `make run` builds and opens
 it from there. To install somewhere else: `make install INSTALL_DIR=~/Applications`.
+
+To update, run `git pull && make install` in the same folder, or choose **Update SpaceNamer…**
+from the menu when it offers one: it runs the same two commands in Terminal.
 
 ### Why `make signing`?
 
@@ -104,9 +110,12 @@ open "spacenamer://settings"
 
 ## Privacy
 
-SpaceNamer makes no network connections and collects nothing. Names and settings are stored
-locally in `~/Library/Preferences/com.alexandercollins.SpaceNamer.plist`. It does not record
-your screen or your keystrokes.
+SpaceNamer collects nothing. Its only network connection is the update check: every few hours
+it asks GitHub's public API which commits on `main` are newer than the one your copy was built
+from. That request carries nothing but the commit, and you can turn it off in
+**Settings → General → Updates**. Names and settings are stored locally in
+`~/Library/Preferences/com.alexandercollins.SpaceNamer.plist`. It does not record your screen or
+your keystrokes.
 
 ## Uninstall
 

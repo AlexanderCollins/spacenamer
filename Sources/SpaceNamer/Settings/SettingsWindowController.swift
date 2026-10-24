@@ -29,7 +29,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         tabs.tabStyle = .toolbar
         tabs.canPropagateSelectedChildViewControllerTitle = true
-        addTab("General", symbol: "gearshape", GeneralSettingsView(model: model, preferences: model.preferences))
+        addTab("General", symbol: "gearshape", GeneralSettingsView(model: model, preferences: model.preferences, updates: model.updates))
         addTab("Spaces", symbol: "rectangle.3.group", SpacesSettingsView(model: model))
         addTab("Shortcuts", symbol: "keyboard", ShortcutsSettingsView(model: model, preferences: model.preferences))
         addTab("About", symbol: "info.circle", AboutView())

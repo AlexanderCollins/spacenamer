@@ -49,6 +49,14 @@ enum Badges {
         if let position = space.position { return number(String(position), filled: filled) }
         return fullscreen()
     }
+
+    /// The green mark for an available update, in full colour (not a template).
+    static func update(pointSize: CGFloat = 12) -> NSImage {
+        let configuration = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .medium)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [.white, .systemGreen]))
+        return NSImage(systemSymbolName: "arrow.up.circle.fill", accessibilityDescription: "Update available")?
+            .withSymbolConfiguration(configuration) ?? NSImage()
+    }
 }
 
 extension HotKey {

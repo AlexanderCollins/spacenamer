@@ -48,6 +48,11 @@ else
   cp "${binaries[0]}" "$APP/Contents/MacOS/$APP_NAME"
 fi
 sed -e "s/\$(VERSION)/$VERSION/" -e "s/\$(BUILD)/$BUILD/" Resources/Info.plist > "$APP/Contents/Info.plist"
+# What the update check compares with GitHub, and where it runs `git pull && make install`.
+if COMMIT="$(git rev-parse HEAD 2>/dev/null)"; then
+  /usr/libexec/PlistBuddy -c "Add :SpaceNamerCommit string $COMMIT" "$APP/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :SpaceNamerSource string $ROOT" "$APP/Contents/Info.plist"
+fi
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 [ -f Resources/AppIcon.icns ] && cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 

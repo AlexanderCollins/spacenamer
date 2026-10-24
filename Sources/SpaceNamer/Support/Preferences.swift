@@ -75,6 +75,7 @@ final class Preferences: ObservableObject {
         static let previousHotKey = "HotKey.Previous"
         static let renameHotKey = "HotKey.Rename"
         static let hasLaunchedBefore = "HasLaunchedBefore"
+        static let checkForUpdates = "CheckForUpdates"
     }
 
     static let defaultSwitcherHotKey = HotKey(keyCode: UInt32(kVK_Space), carbonModifiers: UInt32(controlKey | optionKey))
@@ -95,6 +96,7 @@ final class Preferences: ObservableObject {
     @Published var nextHotKey: HotKey? { didSet { save(nextHotKey, oldValue, Key.nextHotKey) } }
     @Published var previousHotKey: HotKey? { didSet { save(previousHotKey, oldValue, Key.previousHotKey) } }
     @Published var renameHotKey: HotKey? { didSet { save(renameHotKey, oldValue, Key.renameHotKey) } }
+    @Published var checkForUpdates: Bool { didSet { save(checkForUpdates, oldValue, Key.checkForUpdates) } }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -111,6 +113,7 @@ final class Preferences: ObservableObject {
         nextHotKey = Self.load(Key.nextHotKey, from: defaults, default: nil)
         previousHotKey = Self.load(Key.previousHotKey, from: defaults, default: nil)
         renameHotKey = Self.load(Key.renameHotKey, from: defaults, default: nil)
+        checkForUpdates = defaults.object(forKey: Key.checkForUpdates) as? Bool ?? true
     }
 
     /// True exactly once, on the very first launch.

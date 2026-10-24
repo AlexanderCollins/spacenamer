@@ -212,3 +212,25 @@ import Testing
     }
 }
 
+// MARK: Updates
+
+@Suite struct UpdateCheckTests {
+    @Test func describesTheNewestChangesFirst() throws {
+        let data = comparison(aheadBy: 5, messages: ["Oldest", "Merge branch 'x'", "Third\n\nWith a body.", "Second", "Newest"])
+        let update = try #require(try UpdateCheck.update(fromComparison: data))
+        #expect(update.changes.map(\.summary) == ["Newest", "Second", "Third", "Oldest"])
+        #expect(update.changes.first?.page?.lastPathComponent == "c4")
+        #expect(update.latest == "c4")
+        #expect(update.page?.host == "github.com")
+    }
+
+    @Test func isNothingWhenUpToDate() throws {
+        #expect(try UpdateCheck.update(fromComparison: comparison(aheadBy: 0, messages: [])) == nil)
+    }
+
+    @Test func onlyAsksAboutRealCommits() {
+        #expect(UpdateCheck.request(since: "3d8a712") != nil)
+        #expect(UpdateCheck.request(since: "main") == nil)
+        #expect(UpdateCheck.request(since: "../../x") == nil)
+    }
+}

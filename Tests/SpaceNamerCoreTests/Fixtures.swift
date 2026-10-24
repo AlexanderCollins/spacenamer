@@ -33,3 +33,12 @@ func urlCommand(_ string: String) -> URLCommand? {
 }
 
 func longName(_ length: Int) -> String { String(repeating: "x", count: length) }
+
+/// GitHub's comparison of a build's commit with `main`, trimmed to what the update check reads.
+func comparison(aheadBy: Int, messages: [String]) -> Data {
+    let commits = messages.enumerated().map { index, message in
+        ["sha": "c\(index)", "commit": ["message": message], "html_url": "https://github.com/AlexanderCollins/spacenamer/commit/c\(index)"] as [String: Any]
+    }
+    let json: [String: Any] = ["ahead_by": aheadBy, "commits": commits, "html_url": "https://github.com/AlexanderCollins/spacenamer/compare/abc...main"]
+    return try! JSONSerialization.data(withJSONObject: json)
+}

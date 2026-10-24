@@ -4,6 +4,7 @@ import SwiftUI
 struct GeneralSettingsView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var preferences: Preferences
+    @ObservedObject var updates: UpdateChecker
     @State private var launchAtLogin = LaunchAtLogin.isEnabled
     @State private var launchNeedsApproval = LaunchAtLogin.needsApproval
     @State private var launchError: String?
@@ -61,12 +62,45 @@ struct GeneralSettingsView: View {
                         .foregroundStyle(.red)
                 }
             }
+
+            Section {
+                Toggle("Check for updates automatically", isOn: $preferences.checkForUpdates)
+                HStack {
+                    Text(updateStatus)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if updates.available != nil {
+                        Button("Update…") { updates.offerUpdate() }
+                    }
+                    Button("Check Now") { updates.check() }
+                        .disabled(!updates.canCheck || updates.status == .checking)
+                }
+            } header: {
+                Text("Updates")
+            } footer: {
+                Text("Asks GitHub every few hours whether there are newer changes than the ones this copy was built from.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .formStyle(.grouped)
         .frame(width: 560, height: 470)
         .onAppear {
             launchAtLogin = LaunchAtLogin.isEnabled
             launchNeedsApproval = LaunchAtLogin.needsApproval
+        }
+    }
+
+    private var updateStatus: String {
+        guard updates.canCheck else { return "This copy wasn't built from GitHub, so it can't check." }
+        switch updates.status {
+        case .idle: return "Not checked yet."
+        case .checking: return "Checking…"
+        case .upToDate: return "SpaceNamer is up to date."
+        case .available(let update): return update.changes.count == 1 ? "1 new change is available." : "\(update.changes.count) new changes are available."
+        case .unpublished: return "This copy has changes that aren't on GitHub."
+        case .failed: return "Couldn't reach GitHub."
         }
     }
 

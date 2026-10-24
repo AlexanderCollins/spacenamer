@@ -33,6 +33,7 @@ final class AppModel: ObservableObject {
 
     let preferences: Preferences
     let store: NameStore
+    let updates: UpdateChecker
     var actions = Actions()
 
     private let reader = SpaceReader()
@@ -53,6 +54,7 @@ final class AppModel: ObservableObject {
     init(preferences: Preferences, store: NameStore) {
         self.preferences = preferences
         self.store = store
+        updates = UpdateChecker(preferences: preferences)
         navigator = SpaceNavigator(reader: reader)
         navigator.method = preferences.switchMethod
     }
@@ -96,6 +98,7 @@ final class AppModel: ObservableObject {
         registerHotKeys()
         startPolling()
         refreshPermission()
+        updates.start()
     }
 
     /// Mission Control reorders, adds and removes Spaces without telling anyone, so a
