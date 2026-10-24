@@ -24,7 +24,7 @@ CFStringRef _Nullable SNCopyActiveMenuBarDisplayIdentifier(void) CF_RETURNS_RETA
 /// Managed IDs of every Space the given window is on, or NULL.
 CFArrayRef _Nullable SNCopySpacesForWindow(uint32_t windowID) CF_RETURNS_RETAINED;
 
-/// Creates a space of our own, drawn above the desktops at `level` (1 or more) and
+/// Creates a space of our own, drawn at `level` among the desktops (0 is theirs) and
 /// outside them, so windows put in it stay where they are while desktops slide past
 /// during a Space switch. Returns 0 if unavailable. It goes away with the process.
 uint64_t SNCreateOverlaySpace(int32_t level);
