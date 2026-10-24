@@ -265,6 +265,16 @@ final class AppModel: ObservableObject {
         return screen.localizedName
     }
 
+    /// The Space the menu bar on a display (by UUID) names: where a switch there is heading,
+    /// else the one showing. Without a display, or with Spaces shared, the active menu bar's.
+    func menuBarSpace(onDisplay displayID: String?) -> Space? {
+        guard let displayID,
+              let display = snapshot.displays.first(where: { $0.id.caseInsensitiveCompare(displayID) == .orderedSame })
+        else { return arriving ?? snapshot.current }
+        if let arriving, arriving.displayID == display.id { return arriving }
+        return display.current
+    }
+
     func screen(for displayID: String) -> NSScreen? {
         // Displays sharing Spaces all switch together: show it where the pointer is.
         if displayID == DisplayResolver.sharedSpacesIdentifier {
@@ -493,5 +503,10 @@ final class AppModel: ObservableObject {
 extension NSScreen {
     var displayID: CGDirectDisplayID? {
         (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+    }
+
+    /// The identifier the window server lists this display's Spaces under.
+    var displayUUID: String? {
+        displayID.flatMap(DisplayResolver.uuidString(for:))
     }
 }

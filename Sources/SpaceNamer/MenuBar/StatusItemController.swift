@@ -2,7 +2,8 @@ import AppKit
 import Combine
 import SpaceNamerCore
 
-/// The menu bar item: shows the current Space and lists every Space to jump to.
+/// The menu bar item: shows the current Space and lists every Space to jump to. With a menu
+/// bar on each display, each names the Space on its own display.
 @MainActor
 final class StatusItemController: NSObject, NSMenuDelegate {
     private static let maximumTitleLength = 32
@@ -10,6 +11,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let model: AppModel
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
+    private var replicas: MenuBarReplicas?
     private var cancellables = Set<AnyCancellable>()
 
     init(model: AppModel) {
@@ -22,6 +24,18 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.delegate = self
         menu.autoenablesItems = false
         statusItem.menu = menu
+        replicas = MenuBarReplicas(statusItem: statusItem) { [weak self] button, displayID in
+            guard let self else { return }
+            show(model.menuBarSpace(onDisplay: displayID), on: button)
+        }
+
+        // The real button moves to whichever display's menu bar is active.
+        NotificationCenter.default.publisher(for: NSWindow.didChangeScreenNotification)
+            .sink { [weak self] notification in
+                guard let self, (notification.object as? NSWindow) === statusItem.button?.window else { return }
+                updateButton()
+            }
+            .store(in: &cancellables)
 
         Publishers.Merge4(
             model.$snapshot.map { _ in () },
@@ -41,10 +55,27 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     private func updateButton() {
         guard let button = statusItem.button else { return }
-        guard let space = model.arriving ?? model.snapshot.current else {
+        let space = model.menuBarSpace(onDisplay: button.window?.screen?.displayUUID)
+        show(space, on: button)
+        if let space {
+            let name = model.title(for: space)
+            var tooltip = name
+            if model.hasCustomName(space) { tooltip += " (\(model.systemName(for: space)))" }
+            if !model.hasAccess { tooltip += "\nAccessibility access is needed to switch Spaces." }
+            button.toolTip = tooltip
+            button.setAccessibilityLabel("Current Space: \(name)")
+        } else {
+            button.toolTip = "SpaceNamer"
+        }
+        replicas?.update()
+    }
+
+    /// Sets a button up to name `space`: the real one, or the twin that draws another
+    /// display's menu bar.
+    private func show(_ space: Space?, on button: NSStatusBarButton) {
+        guard let space else {
             button.image = Badges.number("–", filled: false)
             button.title = ""
-            button.toolTip = "SpaceNamer"
             return
         }
 
@@ -63,12 +94,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             button.image = isFullscreen ? Badges.fullscreen() : Badges.badge(for: space, filled: true)
             button.title = ""
         }
-
-        var tooltip = name
-        if model.hasCustomName(space) { tooltip += " (\(model.systemName(for: space)))" }
-        if !model.hasAccess { tooltip += "\nAccessibility access is needed to switch Spaces." }
-        button.toolTip = tooltip
-        button.setAccessibilityLabel("Current Space: \(name)")
     }
 
     // MARK: Menu

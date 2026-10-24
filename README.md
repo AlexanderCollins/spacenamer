@@ -18,7 +18,8 @@ is injected into other apps, and no system files are modified.
 - **Names in Mission Control.** The names appear in Mission Control's Spaces bar in place of
   "Desktop N", and move with the bar as it opens, closes, expands into previews and rearranges.
 - **Menu bar.** Shows the current Space's name (or number), changing the moment a switch
-  starts, with a menu to rename it or jump to any other.
+  starts, with a menu to rename it or jump to any other. With a menu bar on each display, each
+  one names the Space on its own display.
 - **Instant switching.** Jump straight to any desktop without the slide animation.
 - **Switcher.** Press **⌃⌥Space** for a searchable list of your Spaces: type a few letters, press
   Return to go there, or rename from the list.
@@ -146,9 +147,10 @@ SpaceNamer is an independent project. It is not affiliated with, endorsed by or 
 Apple Inc. macOS, Mission Control and Spaces are trademarks of Apple Inc.
 
 It relies on undocumented macOS behaviour: private, read-only window server functions, the
-Dock's gesture events and the layout of Mission Control's interface. Apple doesn't support
-these and can change them in any macOS update, which could break some or all of SpaceNamer
-until it is updated. It does not disable or work around any macOS security protection.
+private AppKit hooks that draw a menu bar item on other displays, the Dock's gesture events and
+the layout of Mission Control's interface. Apple doesn't support these and can change them in
+any macOS update, which could break some or all of SpaceNamer until it is updated. It does not
+disable or work around any macOS security protection.
 
 The software is provided "as is", without warranty of any kind, express or implied. Use it at
 your own risk; the authors are not liable for any damage or data loss arising from its use.
