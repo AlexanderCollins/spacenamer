@@ -293,6 +293,16 @@ import Testing
         #expect(ChatTitle.latest(in: data, session: "s") == ChatTitle(title: "New", isCustom: false))
         #expect(ChatTitle.latest(in: transcript([["type": "user"]]), session: "s") == nil)
     }
+
+    @Test func namesDesktopsOnlyWhatFitsALabel() {
+        func name(_ title: String) -> String? { ChatTitle(title: title, isCustom: false).desktopName }
+        #expect(name("spacenamer") == "spacenamer")
+        #expect(name("Release prep") == "Release prep")
+        #expect(name("Runaway Python processes") == "Runaway")
+        #expect(name("Debug: login loop on staging") == "Debug")
+        #expect(name("Investigating flaky tests") == nil)
+        #expect(name("wealthms-backend-migration") == nil)
+    }
 }
 
 @Suite struct AgentSessionTests {

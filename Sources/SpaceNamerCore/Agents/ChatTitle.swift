@@ -13,6 +13,18 @@ public struct ChatTitle: Equatable, Sendable {
         self.isCustom = isCustom
     }
 
+    /// Longer names don't fit a desktop's label in Mission Control.
+    public static let longestDesktopName = 12
+
+    /// What the chat's desktop is called after it: the title if it's short enough, else its
+    /// first word if that is; nil if neither is.
+    public var desktopName: String? {
+        if title.count <= Self.longestDesktopName { return title }
+        guard let first = title.split(whereSeparator: \.isWhitespace).first else { return nil }
+        let word = String(first).trimmingCharacters(in: CharacterSet(charactersIn: ",:;"))
+        return word.isEmpty || word.count > Self.longestDesktopName ? nil : word
+    }
+
     public static func read(transcript url: URL, session: String?) -> ChatTitle? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }

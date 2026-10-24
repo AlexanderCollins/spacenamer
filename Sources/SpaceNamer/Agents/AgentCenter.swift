@@ -344,21 +344,29 @@ final class AgentCenter: ObservableObject {
         nameDesktop(after: session, renamed: renamed)
     }
 
-    /// Names the session's desktop after its chat. A chat the user just renamed renames
-    /// its desktop as if they'd done it there; otherwise only a desktop they haven't named
-    /// follows its chat, the most recently active one if it has several.
+    /// Names the session's desktop after its chat, if the chat's title (or its first word)
+    /// is short enough for a label. A chat the user just renamed renames its desktop as if
+    /// they'd done it there; otherwise only a desktop they haven't named follows its chat,
+    /// the most recently active one if it has several.
     private func nameDesktop(after session: AgentSession, renamed: Bool = false) {
         guard model.preferences.nameDesktopsFromChats, let key = session.space, let chat = session.chat,
-              let space = model.snapshot.space(forKey: key), model.store.name(for: key) != chat.title
+              let space = model.snapshot.space(forKey: key)
         else { return }
+        let name = chat.desktopName
+        guard model.store.name(for: key) != name else { return }
         if renamed, chat.isCustom {
-            model.rename(space, to: chat.title)
+            if let name { model.rename(space, to: name) }
             return
         }
         guard !model.store.hasUserName(key) else { return }
         let latest = sessions.values.filter { $0.space == key && $0.chat != nil }.max { $0.updated < $1.updated }
         guard latest?.pid == session.pid else { return }
-        model.store.setName(chat.title, for: space, automatic: true)
+        if let name {
+            model.store.setName(name, for: space, automatic: true)
+        } else if model.store.name(for: key) == chat.title {
+            // Named in full before names were kept short.
+            model.store.setName(nil, for: space)
+        }
     }
 
     /// Re-reads a chat's title whenever its transcript changes: renaming a chat writes it
@@ -444,7 +452,7 @@ final class AgentCenter: ObservableObject {
     func removeInjected() {
         for (pid, session) in sessions where pid < 0 {
             if let key = session.space, let space = model.snapshot.space(forKey: key),
-               !model.store.hasUserName(key) || model.store.name(for: key) == session.chat?.title {
+               !model.store.hasUserName(key) || model.store.name(for: key) == session.chat?.desktopName {
                 model.store.setName(nil, for: space)
             }
             remove(pid)

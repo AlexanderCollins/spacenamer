@@ -115,7 +115,8 @@ bar gets a dot whenever any desktop needs you, failed or finished. Done and fail
 you've been on that desktop for a moment.
 
 **Names.** A desktop you haven't named takes its chat's title (Claude Code's own, or the one
-you gave it), and follows it when it changes. Renaming a chat with `/rename` renames its desktop
+you gave it), and follows it when it changes. Only names that fit a label are used: a title over
+12 characters gives its first word, and if that's too long as well the desktop keeps its name. Renaming a chat with `/rename` renames its desktop
 straight away, even one you'd named; Claude Code's own titles never replace a name you gave a
 desktop. A new chat on a desktop you named takes the desktop's name. Both directions can be
 turned off in **Settings → Agents**.
