@@ -78,7 +78,7 @@ struct AgentsSettingsView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(pluginInstalled ? "The SpaceNamer plugin is installed" : "Install the SpaceNamer plugin")
                             .font(.headline)
-                        Text("Its hooks tell SpaceNamer when each session is working, needs you, is done or failed, and its MCP server lets Claude report progress. Installing runs the two `claude plugin` commands in Terminal; sessions already running pick it up after /reload-plugins.")
+                        Text("SpaceNamer follows every Claude Code session from the status files Claude Code keeps, even without the plugin. The plugin adds failed turns, progress through long tasks, and naming new chats after their desktop. Installing runs the two `claude plugin` commands in Terminal.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

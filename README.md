@@ -120,10 +120,17 @@ straight away, even one you'd named; Claude Code's own titles never replace a na
 desktop. A new chat on a desktop you named takes the desktop's name. Both directions can be
 turned off in **Settings → Agents**.
 
-**Which desktop.** An agent belongs to the desktop its terminal was on when you started it or
-last typed into it, and keeps it until you move that terminal window to another desktop.
+**Which desktop.** In iTerm2 and Terminal, SpaceNamer asks the terminal which window shows each
+agent's session, so an agent belongs to the desktop that window is on, and moves with it (macOS
+asks you once to let SpaceNamer do this). In other terminals, it's the desktop the terminal was
+on when you started the agent or last typed into it, until you move that window elsewhere.
 
 ### Claude Code
+
+SpaceNamer follows every running Claude Code session on its own, from the status files Claude
+Code keeps in `~/.claude/sessions`: working, waiting on you, finished, and the chat's name,
+including sessions started before SpaceNamer. The plugin adds what those files don't say: a
+turn that failed, progress through long tasks, and naming a new chat after its desktop.
 
 Install the plugin (or use **Settings → Agents → Install…**, which runs the same commands):
 
@@ -190,8 +197,9 @@ SpaceNamer collects nothing. Its only network connection is the update check: ev
 it asks GitHub's public API which commits on `main` are newer than the one your copy was built
 from. That request carries nothing but the commit, and you can turn it off in
 **Settings → General → Updates**. Agents talk to SpaceNamer through a socket only your user
-account can open (`~/Library/Application Support/SpaceNamer/agent.sock`), and it reads the end
-of a Claude Code session's transcript only to find the chat's title. Names and settings are
+account can open (`~/Library/Application Support/SpaceNamer/agent.sock`). It reads Claude
+Code's session status files, and the end of a session's transcript only to find the chat's
+title, and asks iTerm2 or Terminal which window shows which terminal. Names and settings are
 stored locally in `~/Library/Preferences/com.alexandercollins.SpaceNamer.plist`. It does not
 record your screen or your keystrokes.
 
