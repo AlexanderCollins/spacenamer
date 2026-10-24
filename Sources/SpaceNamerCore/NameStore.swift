@@ -3,6 +3,9 @@ import Foundation
 /// What the user attached to a Space.
 public struct SpaceRecord: Codable, Equatable, Sendable {
     public var name: String?
+    /// The name came from an agent's chat rather than the user, so a newer chat may
+    /// replace it.
+    public var nameIsAutomatic: Bool?
     public var hotKey: HotKey?
     /// Display the Space was last seen on. Lets us tell a closed Space apart from one
     /// that is only hidden because its display is disconnected.
@@ -74,6 +77,11 @@ public final class NameStore {
 
     public func name(for key: SpaceKey) -> String? { records[key]?.name }
 
+    /// The Space has a name the user gave it (not one taken from an agent's chat).
+    public func hasUserName(_ key: SpaceKey) -> Bool {
+        records[key]?.name != nil && records[key]?.nameIsAutomatic != true
+    }
+
     public func hotKey(for key: SpaceKey) -> HotKey? { records[key]?.hotKey }
 
     public func displayName(for space: Space) -> String {
@@ -100,10 +108,14 @@ public final class NameStore {
     }
 
     /// Sets or clears a name. Passing nil, an empty string, or the system name resets it.
-    public func setName(_ raw: String?, for space: Space) {
+    /// `automatic` names (from an agent's chat) give way to the next chat's; the user's don't.
+    public func setName(_ raw: String?, for space: Space, automatic: Bool = false) {
         var name = Self.normalizedName(raw)
         if name == space.systemName { name = nil }
-        update(space) { $0.name = name }
+        update(space) { record in
+            record.name = name
+            record.nameIsAutomatic = name != nil && automatic ? true : nil
+        }
     }
 
     public func setHotKey(_ hotKey: HotKey?, for space: Space) {
@@ -197,7 +209,9 @@ public final class NameStore {
         record.displayID = space.displayID
         record.lastSeen = now()
         let after: SpaceRecord? = record.isEmpty ? nil : record
-        guard after?.name != before?.name || after?.hotKey != before?.hotKey || (after == nil) != (before == nil) else { return }
+        guard after?.name != before?.name || after?.nameIsAutomatic != before?.nameIsAutomatic
+            || after?.hotKey != before?.hotKey || (after == nil) != (before == nil)
+        else { return }
         records[space.key] = after
         commit()
     }

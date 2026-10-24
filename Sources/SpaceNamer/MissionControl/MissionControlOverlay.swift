@@ -296,10 +296,15 @@ final class MissionControlOverlay {
             .store(in: &cancellables)
 
         // Names, the current Space and the Space order can change while Mission Control is up.
-        Publishers.Merge(model.$snapshot.map { _ in () }, model.$namesRevision.map { _ in () })
-            .receive(on: RunLoop.main)
-            .sink { [weak self] in self?.relabel() }
-            .store(in: &cancellables)
+        Publishers.Merge4(
+            model.$snapshot.map { _ in () },
+            model.$namesRevision.map { _ in () },
+            model.agents.$statusBySpace.map { _ in () },
+            model.preferences.$showAgentStatus.map { _ in () }
+        )
+        .receive(on: RunLoop.main)
+        .sink { [weak self] in self?.relabel() }
+        .store(in: &cancellables)
     }
 
     // MARK: Input
@@ -1013,13 +1018,28 @@ final class MissionControlOverlay {
         let origin = CGPoint(x: screen.frame.minX, y: primaryHeight - screen.frame.maxY)
 
         let geometries = layout.labels.map { Self.geometry(for: $0, bar: layout.barFrame, origin: origin) }
-        let names: [String?] = spaces.map { space in space.flatMap { model.store.name(for: $0.key) } }
+        let statuses = spaces.map { space in space.flatMap { model.agents.status(for: $0) } }
+        // Desktops with an agent to show get a pill even without a name of their own.
+        let names: [String?] = spaces.indices.map { index in
+            guard let space = spaces[index] else { return nil }
+            return model.store.name(for: space.key) ?? (statuses[index] != nil ? model.title(for: space) : nil)
+        }
+        let current = spaces.map { space -> Bool in
+            guard let space else { return false }
+            return switchingTo.map { $0 == space.key } ?? (space.managedID == display.currentManagedID)
+        }
         let pills = PillLayout.layout(layout.labels.indices.map { index in
             let geometry = geometries[index]
+            let label = layout.labels[index]
             guard let name = names[index] else {
-                return PillLayout.Item(center: geometry.center.x, cover: Self.dockLabelWidth(layout.labels[index]), fit: nil)
+                return PillLayout.Item(center: geometry.center.x, cover: Self.dockLabelWidth(label), fit: nil)
             }
-            return PillLayout.Item(center: geometry.center.x, cover: geometry.size.width, fit: OverlayCanvas.fit(for: name, textScale: geometry.textScale))
+            // The Dock highlights only the current desktop's name, so the others can give up
+            // the room its highlight would take when a neighbour's name needs it.
+            let mustCover = current[index] || label.frame.height >= 40 ? geometry.size.width : label.frame.width + 4
+            var fit = OverlayCanvas.fit(for: name, textScale: geometry.textScale)
+            fit.comfortable = max(fit.comfortable, geometry.size.width)
+            return PillLayout.Item(center: geometry.center.x, cover: mustCover, fit: fit)
         }, within: PillLayout.gap...(screen.frame.width - PillLayout.gap))
 
         var targets: [OverlayCanvas.Target] = []
@@ -1030,11 +1050,13 @@ final class MissionControlOverlay {
             var geometry = geometries[index]
             geometry.center.x = pill.center
             geometry.size.width = pill.width
+            geometry.textScale *= OverlayCanvas.shrink(name, toFit: pill.width, textScale: geometry.textScale)
             targets.append(OverlayCanvas.Target(
                 key: space.key,
                 name: name,
-                isCurrent: switchingTo.map { $0 == space.key } ?? (space.managedID == display.currentManagedID),
-                geometry: geometry
+                isCurrent: current[index],
+                geometry: geometry,
+                agent: statuses[index]
             ))
         }
         window.canvas.update(targets, transition: transition, fadeNew: fadeNew)

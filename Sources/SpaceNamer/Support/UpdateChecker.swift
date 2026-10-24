@@ -145,20 +145,10 @@ final class UpdateChecker: ObservableObject {
     }
 
     private func runUpdate(in folder: URL) {
-        let quoted = "'" + folder.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        let script = """
-        #!/bin/zsh
-        cd \(quoted) || exit 1
-        echo "Updating SpaceNamer in $PWD"
-        git pull --ff-only && make install
-        """
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent("Update SpaceNamer.command")
-        do {
-            try script.write(to: file, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: file.path)
-            NSWorkspace.shared.open(file)
-        } catch {
-            NSSound.beep()
-        }
+        TerminalScript.run("Update SpaceNamer", lines: [
+            "cd \(TerminalScript.quoted(folder.path)) || exit 1",
+            "echo \"Updating SpaceNamer in $PWD\"",
+            "git pull --ff-only && make install",
+        ])
     }
 }

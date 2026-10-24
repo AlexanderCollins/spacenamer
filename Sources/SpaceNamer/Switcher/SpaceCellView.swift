@@ -8,6 +8,7 @@ final class SpaceCellView: NSTableCellView {
     private static let maximumIcons = 6
 
     private let badge = BadgeView()
+    private let agentDot = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let subtitleLabel = NSTextField(labelWithString: "")
     private let iconStack = NSStackView()
@@ -33,7 +34,13 @@ final class SpaceCellView: NSTableCellView {
         iconStack.setContentHuggingPriority(.required, for: .horizontal)
         iconStack.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
 
-        let text = NSStackView(views: [titleLabel, subtitleLabel])
+        let titleRow = NSStackView(views: [titleLabel, agentDot])
+        titleRow.orientation = .horizontal
+        titleRow.alignment = .centerY
+        titleRow.spacing = 6
+        agentDot.setContentHuggingPriority(.required, for: .horizontal)
+
+        let text = NSStackView(views: [titleRow, subtitleLabel])
         text.orientation = .vertical
         text.alignment = .leading
         text.spacing = 1
@@ -68,15 +75,20 @@ final class SpaceCellView: NSTableCellView {
         space: Space,
         isCurrent: Bool,
         accessory: String?,
-        apps: [NSRunningApplication]
+        apps: [NSRunningApplication],
+        agent: DesktopAgentStatus?
     ) {
         titleText = title
         titleRanges = ranges
         badge.text = space.position.map(String.init)
         badge.isFullscreen = space.kind == .fullscreen
         badge.isCurrent = isCurrent
-        subtitleLabel.stringValue = subtitle ?? ""
-        subtitleLabel.isHidden = subtitle == nil
+        // An agent's state leads the subtitle, after a dot in its colour by the name.
+        let subtitle = [agent.map(AgentStyle.describe), subtitle].compactMap { $0 }.joined(separator: " — ")
+        subtitleLabel.stringValue = subtitle
+        subtitleLabel.isHidden = subtitle.isEmpty
+        agentDot.image = agent.map { AgentStyle.dot($0.state) }
+        agentDot.isHidden = agent == nil
         accessoryLabel.stringValue = accessory ?? ""
         accessoryLabel.isHidden = accessory == nil
 
@@ -92,7 +104,7 @@ final class SpaceCellView: NSTableCellView {
         }
         iconStack.isHidden = iconStack.arrangedSubviews.isEmpty
 
-        setAccessibilityLabel([title, subtitle, isCurrent ? "current" : nil].compactMap { $0 }.joined(separator: ", "))
+        setAccessibilityLabel([title, subtitle.isEmpty ? nil : subtitle, isCurrent ? "current" : nil].compactMap { $0 }.joined(separator: ", "))
         applyColors()
     }
 

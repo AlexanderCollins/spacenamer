@@ -48,17 +48,28 @@ struct LabelStyle: Equatable {
     var fill: CGColor
     var currentFill: CGColor
     var text: CGColor
+    /// A desktop with an agent to show takes its state's colour, with white text; with
+    /// progress, the part still to go is a muted `agentTrack`.
+    var agentFill: [AgentState: CGColor] = [:]
+    var agentTrack: [AgentState: CGColor] = [:]
+    var agentText: CGColor = .white
 
     static func resolve(for appearance: NSAppearance) -> LabelStyle {
         var style = LabelStyle(fill: .black, currentFill: .black, text: .black)
         appearance.performAsCurrentDrawingAppearance {
             let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            // Opaque, so the Dock's own label underneath can never show through.
+            let fill = dark ? NSColor(white: 0.17, alpha: 1) : NSColor(white: 0.94, alpha: 1)
             style = LabelStyle(
-                // Opaque, so the Dock's own label underneath can never show through.
-                fill: (dark ? NSColor(white: 0.17, alpha: 1) : NSColor(white: 0.94, alpha: 1)).cgColor,
+                fill: fill.cgColor,
                 currentFill: (dark ? NSColor(white: 0.32, alpha: 1) : NSColor(white: 0.80, alpha: 1)).cgColor,
                 text: (dark ? NSColor.white : NSColor(white: 0.08, alpha: 1)).cgColor
             )
+            for state in AgentState.allCases where state != .idle {
+                let color = AgentStyle.color(state).usingColorSpace(.sRGB) ?? AgentStyle.color(state)
+                style.agentFill[state] = color.cgColor
+                style.agentTrack[state] = (color.blended(withFraction: 0.55, of: fill.usingColorSpace(.sRGB) ?? fill) ?? color).cgColor
+            }
         }
         return style
     }
@@ -273,6 +284,7 @@ final class OverlayCanvas {
         let isCurrent: Bool
         /// Already laid out against its neighbours (see `PillLayout`).
         let geometry: LabelGeometry
+        let agent: DesktopAgentStatus?
     }
 
     /// Brings the labels in line with `targets`. Existing labels move with `transition`
@@ -282,12 +294,12 @@ final class OverlayCanvas {
         for target in targets {
             seen.insert(target.key)
             if let label = labels[target.key], !label.isLeaving {
-                label.setContent(name: target.name, isCurrent: target.isCurrent, width: target.geometry.size.width, textScale: target.geometry.textScale)
+                label.setContent(name: target.name, isCurrent: target.isCurrent, agent: target.agent, width: target.geometry.size.width, textScale: target.geometry.textScale)
                 label.move(to: target.geometry, transition: transition)
             } else {
                 labels[target.key]?.removeFromSuperlayer()
                 let label = NameLabelLayer(scale: scale, style: style)
-                label.setContent(name: target.name, isCurrent: target.isCurrent, width: target.geometry.size.width, textScale: target.geometry.textScale)
+                label.setContent(name: target.name, isCurrent: target.isCurrent, agent: target.agent, width: target.geometry.size.width, textScale: target.geometry.textScale)
                 label.move(to: target.geometry, transition: nil)
                 slide.addSublayer(label)
                 labels[target.key] = label
@@ -326,6 +338,15 @@ final class OverlayCanvas {
         )
     }
 
+    /// The smallest names are drawn, as the Dock draws them under thumbnails.
+    private static let smallestTextScale: CGFloat = 0.87
+
+    /// How much smaller `name` has to be drawn to fit `width` uncut, if it can be.
+    static func shrink(_ name: String, toFit width: CGFloat, textScale: CGFloat) -> CGFloat {
+        let fits = width / ((NameLabelLayer.textWidth(of: name) + 2 * snugPadding) * textScale)
+        return min(1, max(fits, smallestTextScale / textScale))
+    }
+
     private func withoutAnimation(_ body: () -> Void) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -335,13 +356,15 @@ final class OverlayCanvas {
 }
 
 /// One name pill. Its bounds are centred on (0, 0) so the text stays centred while the
-/// pill's size animates.
-final class NameLabelLayer: CALayer {
+/// pill's size animates. A gradient layer, so an agent's progress fills it from the left
+/// and stretches with it as it animates.
+final class NameLabelLayer: CAGradientLayer {
     private let text = CATextLayer()
     private(set) var geometry: LabelGeometry?
     private(set) var isLeaving = false
     private var labelName = ""
     private var isCurrent = false
+    private var agent: DesktopAgentStatus?
     private var labelStyle: LabelStyle
     private var textRoom: CGFloat = 0
     private static let font = NSFont.systemFont(ofSize: 13, weight: .medium)
@@ -361,6 +384,9 @@ final class NameLabelLayer: CALayer {
         text.isWrapped = false
         text.position = .zero
         addSublayer(text)
+        startPoint = CGPoint(x: 0, y: 0.5)
+        endPoint = CGPoint(x: 1, y: 0.5)
+        borderColor = CGColor(gray: 1, alpha: 0.9)
         apply(style: style)
     }
 
@@ -380,8 +406,47 @@ final class NameLabelLayer: CALayer {
 
     func apply(style: LabelStyle) {
         labelStyle = style
-        backgroundColor = isCurrent ? style.currentFill : style.fill
-        text.foregroundColor = style.text
+        applyFill(animated: false)
+    }
+
+    /// The pill's colours: the agent's state if there is one, else plain, lighter for the
+    /// current Space (which an agent's pill shows with a white edge instead).
+    private func applyFill(animated: Bool) {
+        let from = presentation()?.backgroundColor ?? backgroundColor
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if let agent, let fill = labelStyle.agentFill[agent.state] {
+            let track = labelStyle.agentTrack[agent.state] ?? fill
+            if let progress = agent.progress {
+                let edge = NSNumber(value: Double(progress))
+                colors = [fill, fill, track, track]
+                locations = [0, edge, edge, 1]
+                backgroundColor = track
+            } else {
+                colors = nil
+                backgroundColor = fill
+            }
+            text.foregroundColor = labelStyle.agentText
+            borderWidth = isCurrent ? 1.5 : 0
+        } else {
+            colors = nil
+            backgroundColor = isCurrent ? labelStyle.currentFill : labelStyle.fill
+            text.foregroundColor = labelStyle.text
+            borderWidth = 0
+        }
+        // The gradient only keeps to the rounded corners when clipped.
+        masksToBounds = colors != nil
+        CATransaction.commit()
+        // Cross-fade like the Dock's highlight; a pill that isn't on screen yet just takes
+        // its colour.
+        if animated, superlayer != nil, let from {
+            let fade = CABasicAnimation(keyPath: "backgroundColor")
+            fade.fromValue = from
+            fade.toValue = backgroundColor
+            fade.duration = Self.highlightFade
+            fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            add(fade, forKey: "highlight")
+        }
     }
 
     /// `width` is the pill's width on screen; the text is drawn at full size and scaled
@@ -389,7 +454,7 @@ final class NameLabelLayer: CALayer {
     /// How long the current-Space highlight takes to move, as the Dock's does.
     static let highlightFade: CFTimeInterval = 0.1
 
-    func setContent(name: String, isCurrent: Bool, width: CGFloat, textScale: CGFloat) {
+    func setContent(name: String, isCurrent: Bool, agent: DesktopAgentStatus?, width: CGFloat, textScale: CGFloat) {
         let room = max(10, width / max(textScale, 0.1) - 2 * OverlayCanvas.snugPadding + 2)
         if name != labelName || room != textRoom {
             labelName = name
@@ -398,23 +463,10 @@ final class NameLabelLayer: CALayer {
             let height = ceil(Self.font.ascender - Self.font.descender + Self.font.leading)
             text.bounds = CGRect(x: 0, y: 0, width: min(textWidth + 2, room), height: height)
         }
-        if isCurrent != self.isCurrent {
+        if isCurrent != self.isCurrent || agent != self.agent {
             self.isCurrent = isCurrent
-            let from = presentation()?.backgroundColor ?? backgroundColor
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            backgroundColor = isCurrent ? labelStyle.currentFill : labelStyle.fill
-            CATransaction.commit()
-            // Cross-fade like the Dock's highlight when the current Space changes; a pill
-            // that isn't on screen yet just takes its colour.
-            if superlayer != nil, let from {
-                let fade = CABasicAnimation(keyPath: "backgroundColor")
-                fade.fromValue = from
-                fade.toValue = backgroundColor
-                fade.duration = Self.highlightFade
-                fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                add(fade, forKey: "highlight")
-            }
+            self.agent = agent
+            applyFill(animated: true)
         }
     }
 

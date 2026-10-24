@@ -58,10 +58,11 @@ final class SwitcherController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
             MainActor.assumeIsolated { self?.close() }
         }
 
-        Publishers.Merge3(
+        Publishers.Merge4(
             model.$snapshot.map { _ in () },
             model.$namesRevision.map { _ in () },
-            model.$appsBySpace.map { _ in () }
+            model.$appsBySpace.map { _ in () },
+            model.agents.$statusBySpace.map { _ in () }
         )
         .receive(on: RunLoop.main)
         .sink { [weak self] in
@@ -422,7 +423,8 @@ final class SwitcherController: NSObject, NSTextFieldDelegate, NSTableViewDataSo
                 space: item.space,
                 isCurrent: item.isCurrent,
                 accessory: item.accessory,
-                apps: item.apps
+                apps: item.apps,
+                agent: model.agents.status(for: item.space)
             )
             return cell
         }

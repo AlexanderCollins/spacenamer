@@ -8,6 +8,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         case general
         case spaces
         case shortcuts
+        case agents
         case about
     }
 
@@ -32,6 +33,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         addTab("General", symbol: "gearshape", GeneralSettingsView(model: model, preferences: model.preferences, updates: model.updates))
         addTab("Spaces", symbol: "rectangle.3.group", SpacesSettingsView(model: model))
         addTab("Shortcuts", symbol: "keyboard", ShortcutsSettingsView(model: model, preferences: model.preferences))
+        addTab("Agents", symbol: "sparkles", AgentsSettingsView(model: model, preferences: model.preferences, agents: model.agents))
         addTab("About", symbol: "info.circle", AboutView())
         window.contentViewController = tabs
         window.toolbarStyle = .preference

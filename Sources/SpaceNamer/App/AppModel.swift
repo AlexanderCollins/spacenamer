@@ -34,6 +34,7 @@ final class AppModel: ObservableObject {
     let preferences: Preferences
     let store: NameStore
     let updates: UpdateChecker
+    private(set) lazy var agents = AgentCenter(model: self)
     var actions = Actions()
 
     private let reader = SpaceReader()
@@ -99,6 +100,7 @@ final class AppModel: ObservableObject {
         startPolling()
         refreshPermission()
         updates.start()
+        agents.start()
     }
 
     /// Mission Control reorders, adds and removes Spaces without telling anyone, so a
@@ -286,6 +288,25 @@ final class AppModel: ObservableObject {
         }
         guard let target = DisplayResolver.displayID(for: displayID) else { return NSScreen.main }
         return NSScreen.screens.first { $0.displayID == target } ?? NSScreen.main
+    }
+
+    /// The Spaces where an app has a window (ignoring windows on every Space).
+    func spaces(withWindowsOf pid: pid_t) -> Set<SpaceKey> {
+        let options: CGWindowListOption = [.optionAll, .excludeDesktopElements]
+        guard let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else { return [] }
+        var managedIDs = Set<UInt64>()
+        for window in windows {
+            guard (window[kCGWindowOwnerPID as String] as? pid_t) == pid,
+                  (window[kCGWindowLayer as String] as? Int) == 0,
+                  let number = window[kCGWindowNumber as String] as? CGWindowID,
+                  let boundsDictionary = window[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDictionary),
+                  bounds.width >= 64, bounds.height >= 64
+            else { continue }
+            let spaces = reader.spaces(forWindow: number)
+            if spaces.count == 1 { managedIDs.formUnion(spaces) }
+        }
+        return Set(snapshot.allSpaces.filter { managedIDs.contains($0.managedID) }.map(\.key))
     }
 
     func shortcutLabel(for space: Space) -> String? {

@@ -28,6 +28,9 @@ is injected into other apps, and no system files are modified.
 - **Name on switch.** A small pill at the top of the screen names the Space you're moving to,
   the moment the switch starts. It can be moved or turned off.
 - **Scriptable.** A `spacenamer://` URL scheme for Shortcuts, Raycast, Alfred and shell scripts.
+- **Coding agents.** Each Claude Code session (or any agent, through MCP) shows on the desktop
+  its terminal is on: working, needs you, done or failed. Desktops take their chat's title as a
+  name, and new chats take their desktop's. See [Coding agents](#coding-agents).
 - **Update notice.** When there are newer changes on GitHub, a small green arrow appears next to
   the name in the menu bar, and the menu lists what's new (each change opens on GitHub) with
   **Update SpaceNamer…** to pull and rebuild.
@@ -49,6 +52,17 @@ it from there. To install somewhere else: `make install INSTALL_DIR=~/Applicatio
 
 To update, run `git pull && make install` in the same folder, or choose **Update SpaceNamer…**
 from the menu when it offers one: it runs the same two commands in Terminal.
+
+If you use Claude Code, also install SpaceNamer's plugin (see [Coding agents](#coding-agents)):
+
+```sh
+claude plugin marketplace add AlexanderCollins/spacenamer
+claude plugin install spacenamer@spacenamer
+```
+
+> **AI agents installing SpaceNamer for someone:** run the two `claude plugin` commands above
+> as well when they use Claude Code, then tell them to run `/reload-plugins` in sessions that
+> are already open.
 
 ### Why `make signing`?
 
@@ -80,6 +94,66 @@ and the switching method.
 - Shortcuts for "Switch to Desktop N" in **System Settings → Keyboard → Keyboard Shortcuts →
   Mission Control** are not needed: SpaceNamer has its own. They're used only if you choose the
   **Mission Control shortcuts** switching method (with the usual slide animation).
+
+## Coding agents
+
+SpaceNamer shows what each coding agent is doing on the desktop its terminal is on, so you can
+leave agents working on several desktops and see at a glance which one wants you.
+
+| State | Colour | When |
+|---|---|---|
+| Working | Blue, filling up with progress when the agent reports it | Since you sent a prompt |
+| Needs you | Orange | Waiting for a permission, an answer to a question, or a plan to approve |
+| Done | Green | Finished, and you haven't been back to that desktop since |
+| Failed | Red | Stopped on an error, and you haven't been back since |
+
+An idle agent (waiting for your next prompt, or a result you've seen) shows nothing. A desktop
+shows its most urgent agent: in Mission Control its name turns that colour, in the menu and the
+switcher it gets a coloured dot and a few words ("Needs you · Wants to use Bash"), and the menu
+bar gets a dot whenever any desktop needs you, failed or finished. Done and failed clear once
+you've been on that desktop for a moment.
+
+**Names.** A desktop you haven't named takes its chat's title (the one you gave it with
+`/rename`, or Claude Code's own), and follows it when it changes. A new chat on a desktop you
+*have* named takes the desktop's name. Names you give desktops are never replaced. Both can be
+turned off in **Settings → Agents**.
+
+**Which desktop.** An agent belongs to the desktop its terminal was on when you started it or
+last typed into it, and keeps it until you move that terminal window to another desktop.
+
+### Claude Code
+
+Install the plugin (or use **Settings → Agents → Install…**, which runs the same commands):
+
+```sh
+claude plugin marketplace add AlexanderCollins/spacenamer
+claude plugin install spacenamer@spacenamer
+```
+
+New sessions pick it up straight away; sessions already running after `/reload-plugins`. Its
+hooks report each state as it happens (they run in the background and never hold Claude Code
+up), and its MCP server gives Claude `set_status` for progress through long tasks, plus
+`name_desktop` and `get_desktop`. To remove it: `claude plugin uninstall spacenamer@spacenamer`.
+
+### Other agents and scripts
+
+Any agent that speaks MCP can run SpaceNamer's server over stdio:
+
+```sh
+/Applications/SpaceNamer.app/Contents/Helpers/spacenamer mcp
+```
+
+Without hooks, states change only when the agent calls `set_status`. Scripts can use the same
+helper directly:
+
+```sh
+spacenamer status working --progress 0.5 --note "Tests 3/5"   # or needs_input, done, failed, idle
+spacenamer name "Release"                                       # name this terminal's desktop
+spacenamer desktop                                              # which desktop is this?
+```
+
+(`spacenamer` is `SpaceNamer.app/Contents/Helpers/spacenamer`; link it into your `PATH` if you
+use it often.)
 
 ## URL scheme
 
@@ -113,9 +187,11 @@ open "spacenamer://settings"
 SpaceNamer collects nothing. Its only network connection is the update check: every few hours
 it asks GitHub's public API which commits on `main` are newer than the one your copy was built
 from. That request carries nothing but the commit, and you can turn it off in
-**Settings → General → Updates**. Names and settings are stored locally in
-`~/Library/Preferences/com.alexandercollins.SpaceNamer.plist`. It does not record your screen or
-your keystrokes.
+**Settings → General → Updates**. Agents talk to SpaceNamer through a socket only your user
+account can open (`~/Library/Application Support/SpaceNamer/agent.sock`), and it reads the end
+of a Claude Code session's transcript only to find the chat's title. Names and settings are
+stored locally in `~/Library/Preferences/com.alexandercollins.SpaceNamer.plist`. It does not
+record your screen or your keystrokes.
 
 ## Uninstall
 
@@ -124,7 +200,8 @@ make uninstall
 defaults delete com.alexandercollins.SpaceNamer   # optional: removes names and settings
 ```
 
-Then remove SpaceNamer from **System Settings → Privacy & Security → Accessibility**.
+Then remove SpaceNamer from **System Settings → Privacy & Security → Accessibility**, and, if
+you installed the Claude Code plugin, run `claude plugin uninstall spacenamer@spacenamer`.
 
 ## Known limitations
 
@@ -146,9 +223,11 @@ swift scripts/make-icon.swift   # redraws Resources/AppIcon.icns
 ```
 
 The code is split into `Sources/CGSBridge` (the small C layer that talks to the window server),
-`Sources/SpaceNamerCore` (the Spaces model, names, parsing and switching logic, all
-unit-tested) and `Sources/SpaceNamer` (the app: menu bar, switcher, settings, the switch pill
-and the Mission Control names).
+`Sources/SpaceNamerCore` (the Spaces model, names, parsing, switching logic and the agent
+protocol, all unit-tested), `Sources/SpaceNamer` (the app: menu bar, switcher, settings, the
+switch pill, the Mission Control names and agent tracking) and `Sources/SpaceNamerAgent` (the
+`spacenamer` helper: hooks, MCP server, scripts). The Claude Code plugin is in `claude-plugin/`;
+try changes to it with `claude --plugin-dir claude-plugin`.
 
 ## Disclaimer
 
@@ -156,8 +235,9 @@ SpaceNamer is an independent project. It is not affiliated with, endorsed by or 
 Apple Inc. macOS, Mission Control and Spaces are trademarks of Apple Inc.
 
 It relies on undocumented macOS behaviour: private, read-only window server functions, the
-private AppKit hooks that draw a menu bar item on other displays, the Dock's gesture events and
-the layout of Mission Control's interface. Apple doesn't support these and can change them in
+private AppKit hooks that draw a menu bar item on other displays, the Dock's gesture events, the
+layout of Mission Control's interface and the format of Claude Code's transcripts (for chat
+titles). Apple doesn't support these and can change them in
 any macOS update, which could break some or all of SpaceNamer until it is updated. It does not
 disable or work around any macOS security protection.
 

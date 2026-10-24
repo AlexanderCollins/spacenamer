@@ -234,3 +234,145 @@ import Testing
         #expect(UpdateCheck.request(since: "../../x") == nil)
     }
 }
+
+// MARK: Agents
+
+@Suite struct ClaudeHookTests {
+    private let processes = [AgentProcess(pid: 10, name: "sh"), AgentProcess(pid: 11, name: "claude"), AgentProcess(pid: 12, name: "zsh")]
+
+    @Test func mapsHooksToStates() throws {
+        func event(_ fields: [String: Any]) -> AgentReport.Event? {
+            ClaudeHook.report(for: hookInput(fields), processes: processes)?.event
+        }
+        #expect(event(["hook_event_name": "UserPromptSubmit"]) == .prompted)
+        #expect(event(["hook_event_name": "PermissionRequest", "tool_name": "Bash"]) == .needsInput)
+        #expect(event(["hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion"]) == .needsInput)
+        #expect(event(["hook_event_name": "PreToolUse", "tool_name": "Bash"]) == nil)
+        #expect(event(["hook_event_name": "PostToolUse", "tool_name": "Bash"]) == .working)
+        #expect(event(["hook_event_name": "Notification", "notification_type": "permission_prompt"]) == .needsInput)
+        #expect(event(["hook_event_name": "Notification", "notification_type": "idle_prompt"]) == nil)
+        #expect(event(["hook_event_name": "Stop"]) == .done)
+        #expect(event(["hook_event_name": "StopFailure", "error": "rate_limit"]) == .failed)
+        #expect(event(["hook_event_name": "SessionEnd", "reason": "other"]) == .ended)
+        #expect(event(["hook_event_name": "SubagentStop"]) == nil)
+    }
+
+    @Test func findsTheAgentPastTheShell() throws {
+        let report = try #require(ClaudeHook.report(for: hookInput(["hook_event_name": "Stop"]), processes: processes))
+        #expect(report.agentPID == 11)
+    }
+
+    @Test func namesOnlyANewChatWithoutATitle() {
+        let reply = AgentReply(chatTitle: "Mail")
+        let fresh = hookInput(["hook_event_name": "SessionStart", "source": "startup"])
+        let named = hookInput(["hook_event_name": "SessionStart", "source": "startup", "session_title": "Inbox"])
+        let cleared = hookInput(["hook_event_name": "SessionStart", "source": "clear"])
+        #expect(ClaudeHook.output(for: fresh, reply: reply) != nil)
+        #expect(ClaudeHook.output(for: named, reply: reply) == nil)
+        #expect(ClaudeHook.output(for: cleared, reply: reply) == nil)
+        #expect(ClaudeHook.output(for: fresh, reply: AgentReply()) == nil)
+    }
+}
+
+@Suite struct ChatTitleTests {
+    @Test func prefersTheUsersTitle() {
+        let data = transcript([
+            ["type": "custom-title", "customTitle": "Release prep", "sessionId": "s"],
+            ["type": "user", "message": "hello"],
+            ["type": "ai-title", "aiTitle": "Prepare the release notes", "sessionId": "s"],
+        ])
+        #expect(ChatTitle.latest(in: data, session: "s") == ChatTitle(title: "Release prep", isCustom: true))
+    }
+
+    @Test func takesTheLatestGeneratedTitleForThisSession() {
+        let data = transcript([
+            ["type": "ai-title", "aiTitle": "Old", "sessionId": "s"],
+            ["type": "ai-title", "aiTitle": "Other chat", "sessionId": "t"],
+            ["type": "ai-title", "aiTitle": "New", "sessionId": "s"],
+        ])
+        #expect(ChatTitle.latest(in: data, session: "s") == ChatTitle(title: "New", isCustom: false))
+        #expect(ChatTitle.latest(in: transcript([["type": "user"]]), session: "s") == nil)
+    }
+}
+
+@Suite struct AgentSessionTests {
+    private func report(_ event: AgentReport.Event, at time: Double, state: AgentState? = nil, progress: Double? = nil) -> AgentReport {
+        AgentReport(event: event, source: "test", state: state, progress: progress, time: time)
+    }
+
+    @Test func followsATurn() {
+        var session = AgentSession(pid: 1, source: "test")
+        session.apply(report(.prompted, at: 1))
+        #expect(session.state == .working)
+        session.apply(report(.needsInput, at: 2))
+        #expect(session.state == .needsInput)
+        session.apply(report(.working, at: 3))
+        #expect(session.state == .working)
+        session.apply(report(.done, at: 4))
+        #expect(session.state == .done)
+        session.acknowledge()
+        #expect(session.state == .idle)
+    }
+
+    @Test func ignoresNewsOlderThanItsState() {
+        var session = AgentSession(pid: 1, source: "test")
+        session.apply(report(.done, at: 5))
+        session.apply(report(.working, at: 4))
+        #expect(session.state == .done)
+    }
+
+    @Test func keepsProgressOnlyWhileWorking() {
+        var session = AgentSession(pid: 1, source: "test")
+        session.apply(report(.status, at: 1, state: .working, progress: 1.5))
+        #expect(session.progress == 1)
+        session.apply(report(.done, at: 2))
+        #expect(session.progress == nil)
+    }
+
+    @Test func aDesktopShowsItsMostUrgentAgent() {
+        var working = AgentSession(pid: 1, source: "test")
+        working.apply(report(.prompted, at: 1))
+        var waiting = AgentSession(pid: 2, source: "test")
+        waiting.apply(report(.needsInput, at: 2))
+        var idle = AgentSession(pid: 3, source: "test")
+        idle.apply(report(.started, at: 3))
+        #expect(DesktopAgentStatus.of([working, waiting, idle])?.state == .needsInput)
+        #expect(DesktopAgentStatus.of([idle]) == nil)
+        #expect(DesktopAgentStatus.of([working, working])?.count == 2)
+    }
+}
+
+@Suite struct MCPServerTests {
+    private func server(reply: AgentReply? = AgentReply(desktop: "Mail", desktopNumber: 3, desktopNamed: true)) -> (MCPServer, Box) {
+        let box = Box()
+        let server = MCPServer(version: "1.0", processes: { [] }) { report in
+            box.reports.append(report)
+            return reply
+        }
+        return (server, box)
+    }
+
+    final class Box { var reports: [AgentReport] = [] }
+
+    @Test func introducesItself() throws {
+        let (server, _) = server()
+        let result = try #require(mcpResult(server.handle(mcpRequest(1, "initialize", ["protocolVersion": "2025-06-18"]))))
+        #expect(result["protocolVersion"] as? String == "2025-06-18")
+        let tools = try #require(mcpResult(server.handle(mcpRequest(2, "tools/list")))?["tools"] as? [[String: Any]])
+        #expect(tools.compactMap { $0["name"] as? String } == ["set_status", "name_desktop", "get_desktop"])
+        #expect(server.handle(mcpRequest(nil, "notifications/initialized")) == nil)
+    }
+
+    @Test func reportsStatus() throws {
+        let (server, box) = server()
+        let text = mcpText(server.handle(mcpRequest(3, "tools/call", ["name": "set_status", "arguments": ["state": "working", "progress": 0.5, "note": "Tests"]])))
+        #expect(text == "Shown on desktop 3 (Mail).")
+        let report = try #require(box.reports.first)
+        #expect(report.event == .status && report.state == .working && report.progress == 0.5 && report.note == "Tests")
+    }
+
+    @Test func saysWhenTheAppIsntRunning() {
+        let (server, _) = server(reply: nil)
+        #expect(mcpText(server.handle(mcpRequest(4, "tools/call", ["name": "get_desktop"]))) == "SpaceNamer isn't running.")
+    }
+}

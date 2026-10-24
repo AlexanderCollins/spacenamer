@@ -1,0 +1,13 @@
+{
+  "name": "spacenamer",
+  "owner": {
+    "name": "Alexander Collins"
+  },
+  "plugins": [
+    {
+      "name": "spacenamer",
+      "source": "./claude-plugin",
+      "description": "Shows each Claude Code session's status on the macOS desktop its terminal is on, and keeps desktop and chat names in step. Needs the SpaceNamer app."
+    }
+  ]
+}

@@ -76,6 +76,9 @@ final class Preferences: ObservableObject {
         static let renameHotKey = "HotKey.Rename"
         static let hasLaunchedBefore = "HasLaunchedBefore"
         static let checkForUpdates = "CheckForUpdates"
+        static let showAgentStatus = "ShowAgentStatus"
+        static let nameDesktopsFromChats = "NameDesktopsFromChats"
+        static let nameChatsFromDesktops = "NameChatsFromDesktops"
     }
 
     static let defaultSwitcherHotKey = HotKey(keyCode: UInt32(kVK_Space), carbonModifiers: UInt32(controlKey | optionKey))
@@ -97,6 +100,9 @@ final class Preferences: ObservableObject {
     @Published var previousHotKey: HotKey? { didSet { save(previousHotKey, oldValue, Key.previousHotKey) } }
     @Published var renameHotKey: HotKey? { didSet { save(renameHotKey, oldValue, Key.renameHotKey) } }
     @Published var checkForUpdates: Bool { didSet { save(checkForUpdates, oldValue, Key.checkForUpdates) } }
+    @Published var showAgentStatus: Bool { didSet { save(showAgentStatus, oldValue, Key.showAgentStatus) } }
+    @Published var nameDesktopsFromChats: Bool { didSet { save(nameDesktopsFromChats, oldValue, Key.nameDesktopsFromChats) } }
+    @Published var nameChatsFromDesktops: Bool { didSet { save(nameChatsFromDesktops, oldValue, Key.nameChatsFromDesktops) } }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -114,6 +120,9 @@ final class Preferences: ObservableObject {
         previousHotKey = Self.load(Key.previousHotKey, from: defaults, default: nil)
         renameHotKey = Self.load(Key.renameHotKey, from: defaults, default: nil)
         checkForUpdates = defaults.object(forKey: Key.checkForUpdates) as? Bool ?? true
+        showAgentStatus = defaults.object(forKey: Key.showAgentStatus) as? Bool ?? true
+        nameDesktopsFromChats = defaults.object(forKey: Key.nameDesktopsFromChats) as? Bool ?? true
+        nameChatsFromDesktops = defaults.object(forKey: Key.nameChatsFromDesktops) as? Bool ?? true
     }
 
     /// True exactly once, on the very first launch.

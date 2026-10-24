@@ -47,10 +47,15 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         .sink { [weak self] in self?.updateButton() }
         .store(in: &cancellables)
 
-        Publishers.Merge(model.$hasAccess.map { _ in () }, model.updates.$status.map { _ in () })
-            .receive(on: RunLoop.main)
-            .sink { [weak self] in self?.updateButton() }
-            .store(in: &cancellables)
+        Publishers.Merge4(
+            model.$hasAccess.map { _ in () },
+            model.updates.$status.map { _ in () },
+            model.agents.$statusBySpace.map { _ in () },
+            model.preferences.$showAgentStatus.map { _ in () }
+        )
+        .receive(on: RunLoop.main)
+        .sink { [weak self] in self?.updateButton() }
+        .store(in: &cancellables)
     }
 
     private func updateButton() {
@@ -62,6 +67,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             var tooltip = name
             if model.hasCustomName(space) { tooltip += " (\(model.systemName(for: space)))" }
             if !model.hasAccess { tooltip += "\nAccessibility access is needed to switch Spaces." }
+            if let (state, space) = attention {
+                tooltip += "\n\(model.title(for: space)): \(state.title.lowercased())"
+            }
             if model.updates.available != nil { tooltip += "\nAn update is available." }
             button.toolTip = tooltip
             button.setAccessibilityLabel("Current Space: \(name)")
@@ -75,17 +83,35 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// display's menu bar.
     private func show(_ space: Space?, on button: NSStatusBarButton) {
         showSpace(space, on: button)
-        guard model.updates.available != nil else { return }
-        // After the name, keeping the title's own font and colour; only the mark is green.
+        var marks: [NSImage] = []
+        if let (state, _) = attention { marks.append(AgentStyle.dot(state, diameter: 7)) }
+        if model.updates.available != nil { marks.append(Badges.update(pointSize: 11)) }
+        guard !marks.isEmpty else { return }
+        // After the name, keeping the title's own font and colour; only the marks are coloured.
         let title = NSMutableAttributedString(attributedString: button.attributedTitle)
         let font = button.font ?? NSFont.menuBarFont(ofSize: 0)
-        let mark = NSTextAttachment()
-        mark.image = Badges.update(pointSize: 11)
-        let size = mark.image?.size ?? .zero
-        mark.bounds = NSRect(x: 0, y: round((font.capHeight - size.height) / 2), width: size.width, height: size.height)
-        title.append(NSAttributedString(string: " ", attributes: title.length > 0 ? title.attributes(at: 0, effectiveRange: nil) : [.font: font]))
-        title.append(NSAttributedString(attachment: mark))
+        let attributes = title.length > 0 ? title.attributes(at: 0, effectiveRange: nil) : [.font: font]
+        for image in marks {
+            let mark = NSTextAttachment()
+            mark.image = image
+            mark.bounds = NSRect(x: 0, y: round((font.capHeight - image.size.height) / 2), width: image.size.width, height: image.size.height)
+            title.append(NSAttributedString(string: " ", attributes: attributes))
+            title.append(NSAttributedString(attachment: mark))
+        }
         button.attributedTitle = title
+    }
+
+    /// The desktop most in need of a look: an agent waiting on the user, failed or done
+    /// (working isn't worth a mark).
+    private var attention: (AgentState, Space)? {
+        var found: (AgentState, Space)?
+        for space in model.snapshot.allSpaces {
+            guard let state = model.agents.status(for: space)?.state, state != .working,
+                  state.urgency > (found?.0.urgency ?? 0)
+            else { continue }
+            found = (state, space)
+        }
+        return found
     }
 
     private func showSpace(_ space: Space?, on button: NSStatusBarButton) {
@@ -205,6 +231,19 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     private func item(for space: Space, isCurrent: Bool) -> NSMenuItem {
         let item = NSMenuItem(title: model.title(for: space), action: #selector(jump(_:)), keyEquivalent: "")
+        if let status = model.agents.status(for: space) {
+            // The agent's state after the name: a coloured dot and a few words.
+            let title = NSMutableAttributedString(string: model.title(for: space) + "  ", attributes: [.font: NSFont.menuFont(ofSize: 0)])
+            let dot = NSTextAttachment()
+            dot.image = AgentStyle.dot(status.state)
+            dot.bounds = NSRect(x: 0, y: 0.5, width: 8, height: 8)
+            title.append(NSAttributedString(attachment: dot))
+            title.append(NSAttributedString(string: " " + AgentStyle.describe(status), attributes: [
+                .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ]))
+            item.attributedTitle = title
+        }
         item.target = self
         item.representedObject = space.key
         item.state = isCurrent ? .on : .off

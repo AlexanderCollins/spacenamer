@@ -1,0 +1,13 @@
+#!/bin/sh
+# Runs SpaceNamer's command-line helper, wherever the app is installed (SpaceNamer keeps a
+# link to it in Application Support). Without SpaceNamer, hooks quietly do nothing.
+helper="$HOME/Library/Application Support/SpaceNamer/spacenamer"
+[ -x "$helper" ] || helper="/Applications/SpaceNamer.app/Contents/Helpers/spacenamer"
+[ -x "$helper" ] && exec "$helper" "$@"
+
+if [ "$1" = "mcp" ]; then
+  echo "SpaceNamer isn't installed: https://github.com/AlexanderCollins/spacenamer" >&2
+  exit 1
+fi
+cat > /dev/null
+exit 0

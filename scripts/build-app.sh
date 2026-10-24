@@ -30,22 +30,31 @@ SIGNING_KEYCHAIN="$SIGNING_DIR/spacenamer-signing.keychain-db"
 SIGNING_NAME="SpaceNamer Local Signing"
 
 binaries=()
+helpers=()
 for arch in $ARCHS; do
   echo "› Building $CONFIGURATION for $arch"
-  swift build \
-    --configuration "$CONFIGURATION" \
-    --triple "$arch-apple-macosx$DEPLOYMENT_TARGET" \
-    --product "$APP_NAME" >/dev/null
-  binaries+=("$(swift build --configuration "$CONFIGURATION" --triple "$arch-apple-macosx$DEPLOYMENT_TARGET" --show-bin-path)/$APP_NAME")
+  for product in "$APP_NAME" SpaceNamerAgent; do
+    swift build \
+      --configuration "$CONFIGURATION" \
+      --triple "$arch-apple-macosx$DEPLOYMENT_TARGET" \
+      --product "$product" >/dev/null
+  done
+  bin_path="$(swift build --configuration "$CONFIGURATION" --triple "$arch-apple-macosx$DEPLOYMENT_TARGET" --show-bin-path)"
+  binaries+=("$bin_path/$APP_NAME")
+  helpers+=("$bin_path/SpaceNamerAgent")
 done
 
 echo "› Assembling $APP"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources"
+# The command-line helper for agents (Claude Code plugin, MCP server, scripts).
+HELPER="$APP/Contents/Helpers/spacenamer"
 if [ "${#binaries[@]}" -gt 1 ]; then
   lipo -create "${binaries[@]}" -output "$APP/Contents/MacOS/$APP_NAME"
+  lipo -create "${helpers[@]}" -output "$HELPER"
 else
   cp "${binaries[0]}" "$APP/Contents/MacOS/$APP_NAME"
+  cp "${helpers[0]}" "$HELPER"
 fi
 sed -e "s/\$(VERSION)/$VERSION/" -e "s/\$(BUILD)/$BUILD/" Resources/Info.plist > "$APP/Contents/Info.plist"
 # What the update check compares with GitHub, and where it runs `git pull && make install`.
@@ -57,9 +66,14 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 [ -f Resources/AppIcon.icns ] && cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 sign_args=(--force --options runtime --timestamp=none)
+# Nested code first: the helper, then the app around it.
+sign() {
+  codesign "${sign_args[@]}" --sign "$1" "$HELPER"
+  codesign "${sign_args[@]}" --sign "$1" "$APP"
+}
 if [ -n "${SIGN_IDENTITY:-}" ]; then
   echo "› Signing with $SIGN_IDENTITY"
-  codesign "${sign_args[@]}" --sign "$SIGN_IDENTITY" "$APP"
+  sign "$SIGN_IDENTITY"
 elif [ -f "$SIGNING_KEYCHAIN" ]; then
   echo "› Signing with the local identity ($SIGNING_NAME)"
   # codesign only looks in the search list, so add the signing keychain just for this
@@ -74,12 +88,12 @@ elif [ -f "$SIGNING_KEYCHAIN" ]; then
   trap restore_keychains EXIT
   security unlock-keychain -p "spacenamer" "$SIGNING_KEYCHAIN"
   security list-keychains -d user -s "${original_keychains[@]}" "$SIGNING_KEYCHAIN"
-  codesign "${sign_args[@]}" --sign "$SIGNING_NAME" "$APP"
+  sign "$SIGNING_NAME"
   restore_keychains
   trap - EXIT
 else
   echo "› Signing ad-hoc (run scripts/setup-signing.sh to keep permissions across rebuilds)"
-  codesign "${sign_args[@]}" --sign - "$APP"
+  sign -
 fi
 
 codesign --verify --strict "$APP"

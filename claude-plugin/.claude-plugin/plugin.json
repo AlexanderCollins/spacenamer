@@ -1,0 +1,11 @@
+{
+  "name": "spacenamer",
+  "version": "1.0.0",
+  "description": "Shows each Claude Code session's status (working, needs you, done, failed) on the macOS desktop its terminal is on, names desktops after their chats and new chats after their desktop. Needs the SpaceNamer app.",
+  "author": {
+    "name": "Alexander Collins"
+  },
+  "homepage": "https://github.com/AlexanderCollins/spacenamer",
+  "repository": "https://github.com/AlexanderCollins/spacenamer",
+  "license": "MIT"
+}
