@@ -2,7 +2,8 @@ import AppKit
 import QuartzCore
 import SpaceNamerCore
 
-/// Where and how big one name pill is, in the overlay's screen-local, top-left-origin space.
+/// Where and how big one name pill (or the band behind them) is, in the overlay's
+/// screen-local, top-left-origin space.
 struct LabelGeometry: Equatable {
     var center: CGPoint
     var size: CGSize
@@ -45,30 +46,44 @@ struct LabelTransition {
 }
 
 struct LabelStyle: Equatable {
+    /// The band the names run along.
     var fill: CGColor
+    /// Shading behind the current Space's name.
     var currentFill: CGColor
     var text: CGColor
-    /// A desktop with an agent to show takes its state's colour, with white text; with
-    /// progress, the part still to go is a muted `agentTrack`.
+    /// A desktop with an agent to show has its state's colour mixed into the band behind
+    /// its name (into `currentFill` for the current Space), the text as ever; with
+    /// progress, the part still to go is a fainter `agentTrack`.
     var agentFill: [AgentState: CGColor] = [:]
     var agentTrack: [AgentState: CGColor] = [:]
-    var agentText: CGColor = .white
+    var currentAgentFill: [AgentState: CGColor] = [:]
+    var currentAgentTrack: [AgentState: CGColor] = [:]
+
+    /// How much of a state's colour is mixed into the band.
+    private static let tint: CGFloat = 0.42
+    private static let trackTint: CGFloat = 0.18
 
     static func resolve(for appearance: NSAppearance) -> LabelStyle {
         var style = LabelStyle(fill: .black, currentFill: .black, text: .black)
         appearance.performAsCurrentDrawingAppearance {
             let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            // Opaque, so the Dock's own label underneath can never show through.
-            let fill = dark ? NSColor(white: 0.17, alpha: 1) : NSColor(white: 0.94, alpha: 1)
+            // Opaque, so the Dock's own names underneath can never show through.
+            let fill = NSColor(srgbRed: dark ? 0.17 : 0.94, green: dark ? 0.17 : 0.94, blue: dark ? 0.17 : 0.94, alpha: 1)
+            let current = NSColor(srgbRed: dark ? 0.28 : 0.85, green: dark ? 0.28 : 0.85, blue: dark ? 0.28 : 0.85, alpha: 1)
             style = LabelStyle(
                 fill: fill.cgColor,
-                currentFill: (dark ? NSColor(white: 0.32, alpha: 1) : NSColor(white: 0.80, alpha: 1)).cgColor,
+                currentFill: current.cgColor,
                 text: (dark ? NSColor.white : NSColor(white: 0.08, alpha: 1)).cgColor
             )
             for state in AgentState.allCases where state != .idle {
                 let color = AgentStyle.color(state).usingColorSpace(.sRGB) ?? AgentStyle.color(state)
-                style.agentFill[state] = color.cgColor
-                style.agentTrack[state] = (color.blended(withFraction: 0.55, of: fill.usingColorSpace(.sRGB) ?? fill) ?? color).cgColor
+                func mix(_ base: NSColor, _ amount: CGFloat) -> CGColor {
+                    (base.blended(withFraction: amount, of: color) ?? base).cgColor
+                }
+                style.agentFill[state] = mix(fill, tint)
+                style.agentTrack[state] = mix(fill, trackTint)
+                style.currentAgentFill[state] = mix(current, tint)
+                style.currentAgentTrack[state] = mix(current, trackTint)
             }
         }
         return style
@@ -140,7 +155,8 @@ final class OverlayWindow: NSPanel {
 }
 
 /// Layer tree for one display's labels. `slide` moves with the Spaces bar as it slides
-/// in and out; each label moves within it as the bar's layout changes.
+/// in and out; each label moves within it as the bar's layout changes, along a band
+/// that covers the Dock's own names.
 final class OverlayCanvas {
     /// Owned by the hosting view; AppKit manages its geometry.
     let root = CALayer()
@@ -148,10 +164,21 @@ final class OverlayCanvas {
     /// `isGeometryFlipped` on a view's own layer, so the flip lives one level down.
     private let content = CALayer()
     let slide = CALayer()
+    /// Spans the screen at the names' height, so none of the Dock's names can show between,
+    /// around or behind ours, however theirs and ours move.
+    private let band = CALayer()
+    private var bandGeometry: LabelGeometry?
+    /// Carries the band and the names up and down together, so no name can drift off the
+    /// band; within it, names only move along.
+    private let row = CALayer()
     private(set) var labels: [SpaceKey: NameLabelLayer] = [:]
     private let scale: CGFloat
     var style = LabelStyle.resolve(for: NSApp.effectiveAppearance) {
-        didSet { if style != oldValue { labels.values.forEach { $0.apply(style: style) } } }
+        didSet {
+            guard style != oldValue else { return }
+            band.backgroundColor = style.fill
+            labels.values.forEach { $0.apply(style: style) }
+        }
     }
 
     init(scale: CGFloat) {
@@ -164,6 +191,13 @@ final class OverlayCanvas {
         slide.anchorPoint = .zero
         root.addSublayer(content)
         content.addSublayer(slide)
+        band.actions = OverlayCanvas.noActions
+        band.backgroundColor = style.fill
+        band.isHidden = true
+        row.actions = OverlayCanvas.noActions
+        row.anchorPoint = .zero
+        row.addSublayer(band)
+        slide.addSublayer(row)
     }
 
     static let noActions: [String: CAAction] = [
@@ -196,8 +230,8 @@ final class OverlayCanvas {
     /// the Dock's labels never show through; it clears only once they're all past the top
     /// edge, where it makes no difference to what's seen.
     func edgeOpacity(atOffset offset: CGFloat) -> Float {
-        let bottoms = labels.values.compactMap { label in label.geometry.map { $0.center.y + $0.size.height / 2 } }
-        guard let lowest = bottoms.max() else { return 1 }
+        guard let band = bandGeometry else { return 1 }
+        let lowest = band.center.y + band.size.height / 2
         let above = -(offset + lowest) // the lowest name's distance above the screen
         let t = Float(min(max((above - 2) / 12, 0), 1))
         return 1 - t * t * (3 - 2 * t)
@@ -287,21 +321,23 @@ final class OverlayCanvas {
         let agent: DesktopAgentStatus?
     }
 
-    /// Brings the labels in line with `targets`. Existing labels move with `transition`
-    /// (or jump when nil); new ones fade in where they belong; stale ones fade out.
-    func update(_ targets: [Target], transition: LabelTransition?, fadeNew: Bool) {
+    /// Brings the labels in line with `targets`, and the band behind them to `band`.
+    /// Existing labels move with `transition` (or jump when nil); new ones fade in where
+    /// they belong; stale ones fade out.
+    func update(_ targets: [Target], band: LabelGeometry?, transition: LabelTransition?, fadeNew: Bool) {
+        moveBand(to: band, transition: transition, fadeIn: fadeNew)
         var seen = Set<SpaceKey>()
         for target in targets {
             seen.insert(target.key)
             if let label = labels[target.key], !label.isLeaving {
                 label.setContent(name: target.name, isCurrent: target.isCurrent, agent: target.agent, width: target.geometry.size.width, textScale: target.geometry.textScale)
-                label.move(to: target.geometry, transition: transition)
+                label.move(to: Self.onBand(target.geometry, band), transition: transition)
             } else {
                 labels[target.key]?.removeFromSuperlayer()
                 let label = NameLabelLayer(scale: scale, style: style)
                 label.setContent(name: target.name, isCurrent: target.isCurrent, agent: target.agent, width: target.geometry.size.width, textScale: target.geometry.textScale)
-                label.move(to: target.geometry, transition: nil)
-                slide.addSublayer(label)
+                label.move(to: Self.onBand(target.geometry, band), transition: nil)
+                row.addSublayer(label)
                 labels[target.key] = label
                 if fadeNew { label.fade(from: 0, to: 1, duration: 0.14) }
             }
@@ -315,12 +351,64 @@ final class OverlayCanvas {
     /// Makes every pill at least `height` tall over `duration`, so the Dock's labels stay
     /// covered through the timing jitter of a fast exit.
     func growLabels(toHeight height: CGFloat, duration: CFTimeInterval) {
-        labels.values.forEach { $0.grow(toHeight: height, duration: duration) }
+        labels.values.forEach { $0.grow(toHeight: height + Self.bandMargin, duration: duration) }
+        if var target = bandGeometry, target.size.height < height + Self.bandMargin {
+            target.size.height = height + Self.bandMargin
+            moveBand(to: target, transition: .resize(at: CACurrentMediaTime(), duration: duration), fadeIn: false)
+        }
     }
 
     func removeAllLabels() {
         labels.values.forEach { $0.removeFromSuperlayer() }
         labels.removeAll()
+        moveBand(to: nil, transition: nil, fadeIn: false)
+    }
+
+    /// `geometry` within the row, which is where the names are vertically.
+    private static func inRow(_ geometry: LabelGeometry) -> LabelGeometry {
+        var geometry = geometry
+        geometry.center.y = 0
+        return geometry
+    }
+
+    /// A name's place in the row, as tall as the band, so its shading fills the band.
+    private static func onBand(_ geometry: LabelGeometry, _ band: LabelGeometry?) -> LabelGeometry {
+        var geometry = inRow(geometry)
+        geometry.size.height = band?.size.height ?? geometry.size.height + bandMargin
+        return geometry
+    }
+
+    /// How much taller than the names the band is, so the Dock's names stay under it while
+    /// both move.
+    static let bandMargin: CGFloat = 4
+
+    private func moveBand(to target: LabelGeometry?, transition: LabelTransition?, fadeIn: Bool) {
+        guard target != bandGeometry else { return }
+        let previous = bandGeometry
+        bandGeometry = target
+        guard let target else {
+            withoutAnimation { band.isHidden = true }
+            return
+        }
+        withoutAnimation { band.isHidden = false }
+        let transition = previous == nil ? nil : transition
+        // Moved only when it has somewhere new to go: starting again from where it is
+        // would put it behind the names' Dock timing.
+        if previous?.center.y != target.center.y {
+            let place = LabelGeometry(center: CGPoint(x: 0, y: target.center.y), size: .zero, textScale: 1)
+            row.place(at: place, transition: transition, rounded: false)
+        }
+        if previous.map(Self.inRow) != Self.inRow(target) {
+            band.place(at: Self.inRow(target), transition: transition, rounded: false)
+        }
+        if previous == nil, fadeIn {
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0
+            fade.toValue = 1
+            fade.duration = 0.14
+            fade.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            band.add(fade, forKey: "fade")
+        }
     }
 
     /// Horizontal padding inside a pill, either side of the text, at full scale: as much
@@ -355,9 +443,10 @@ final class OverlayCanvas {
     }
 }
 
-/// One name pill. Its bounds are centred on (0, 0) so the text stays centred while the
-/// pill's size animates. A gradient layer, so an agent's progress fills it from the left
-/// and stretches with it as it animates.
+/// One name on the band, which is shaded behind it, the band's full height, when it has
+/// something to show (the current Space, an agent's state). Its bounds are centred on
+/// (0, 0) so the text stays centred while its size animates. A gradient layer, so an
+/// agent's progress fills it from the left and stretches with it as it animates.
 final class NameLabelLayer: CAGradientLayer {
     private let text = CATextLayer()
     private(set) var geometry: LabelGeometry?
@@ -368,6 +457,8 @@ final class NameLabelLayer: CAGradientLayer {
     private var labelStyle: LabelStyle
     private var textRoom: CGFloat = 0
     private static let font = NSFont.systemFont(ofSize: 13, weight: .medium)
+    /// The current Space's name is a little bolder.
+    private static let currentFont = NSFont.systemFont(ofSize: 13, weight: .semibold)
 
     init(scale: CGFloat, style: LabelStyle) {
         labelStyle = style
@@ -386,7 +477,6 @@ final class NameLabelLayer: CAGradientLayer {
         addSublayer(text)
         startPoint = CGPoint(x: 0, y: 0.5)
         endPoint = CGPoint(x: 1, y: 0.5)
-        borderColor = CGColor(gray: 1, alpha: 0.9)
         apply(style: style)
     }
 
@@ -400,8 +490,9 @@ final class NameLabelLayer: CAGradientLayer {
 
     var textWidth: CGFloat { Self.textWidth(of: labelName) }
 
+    /// Measured bold, so a name fits whether it's current or not.
     static func textWidth(of name: String) -> CGFloat {
-        ceil((name as NSString).size(withAttributes: [.font: font]).width)
+        ceil((name as NSString).size(withAttributes: [.font: currentFont]).width)
     }
 
     func apply(style: LabelStyle) {
@@ -409,14 +500,14 @@ final class NameLabelLayer: CAGradientLayer {
         applyFill(animated: false)
     }
 
-    /// The pill's colours: the agent's state if there is one, else plain, lighter for the
-    /// current Space (which an agent's pill shows with a white edge instead).
+    /// The shading: the agent's state mixed into the band if there is one (lighter for the
+    /// current Space), else none but for the current Space.
     private func applyFill(animated: Bool) {
         let from = presentation()?.backgroundColor ?? backgroundColor
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        if let agent, let fill = labelStyle.agentFill[agent.state] {
-            let track = labelStyle.agentTrack[agent.state] ?? fill
+        if let agent, let fill = (isCurrent ? labelStyle.currentAgentFill : labelStyle.agentFill)[agent.state] {
+            let track = (isCurrent ? labelStyle.currentAgentTrack : labelStyle.agentTrack)[agent.state] ?? fill
             if let progress = agent.progress {
                 let edge = NSNumber(value: Double(progress))
                 colors = [fill, fill, track, track]
@@ -426,16 +517,13 @@ final class NameLabelLayer: CAGradientLayer {
                 colors = nil
                 backgroundColor = fill
             }
-            text.foregroundColor = labelStyle.agentText
-            borderWidth = isCurrent ? 1.5 : 0
         } else {
             colors = nil
-            backgroundColor = isCurrent ? labelStyle.currentFill : labelStyle.fill
-            text.foregroundColor = labelStyle.text
-            borderWidth = 0
+            // Clear rather than none, so the shading fades in and out like the Dock's.
+            backgroundColor = isCurrent ? labelStyle.currentFill : labelStyle.fill.copy(alpha: 0)
         }
-        // The gradient only keeps to the rounded corners when clipped.
-        masksToBounds = colors != nil
+        text.foregroundColor = labelStyle.text
+        text.font = isCurrent ? Self.currentFont : Self.font
         CATransaction.commit()
         // Cross-fade like the Dock's highlight; a pill that isn't on screen yet just takes
         // its colour.
@@ -474,63 +562,22 @@ final class NameLabelLayer: CAGradientLayer {
         // Re-rendering the same layout (names or the Space list refreshing) must never
         // disturb a move that's already under way.
         if target == geometry { return }
-        let presented = presentation()
-        let fromPosition = presented?.position ?? position
-        let fromSize = presented?.bounds.size ?? bounds.size
         let fromScale = (text.presentation()?.value(forKeyPath: "transform.scale") as? CGFloat)
             ?? (text.value(forKeyPath: "transform.scale") as? CGFloat) ?? 1
+        let previous = geometry
+        geometry = target
+        let transition = previous == nil ? nil : transition
+        place(at: target, transition: transition, rounded: false)
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        position = target.center
-        bounds = Self.centeredBounds(target.size)
-        cornerRadius = target.size.height / 2
         text.setValue(target.textScale, forKeyPath: "transform.scale")
         CATransaction.commit()
-
-        let previous = geometry
-        geometry = target
-        guard let transition, previous != nil else {
-            removeAnimation(forKey: "x")
-            removeAnimation(forKey: "y")
-            removeAnimation(forKey: "bounds")
-            removeAnimation(forKey: "radius")
+        guard let transition else {
             text.removeAnimation(forKey: "scale")
             return
         }
-
-        add(transition.x.animation("position.x", from: fromPosition.x, to: target.center.x, reference: transition.reference, on: self), forKey: "x")
-        add(transition.y.animation("position.y", from: fromPosition.y, to: target.center.y, reference: transition.reference, on: self), forKey: "y")
-
-        let sizeTiming = transition.size
-        let bounds = CAKeyframeAnimation(keyPath: "bounds")
-        let radius = CAKeyframeAnimation(keyPath: "cornerRadius")
-        var boundsValues: [NSValue] = []
-        var radiusValues: [NSNumber] = []
-        var times: [NSNumber] = []
-        for index in 0...48 {
-            let t = Double(index) / 48
-            let p = CGFloat(sizeTiming.curve.value(at: t))
-            let size = CGSize(
-                width: fromSize.width + (target.size.width - fromSize.width) * p,
-                height: fromSize.height + (target.size.height - fromSize.height) * p
-            )
-            boundsValues.append(NSValue(rect: Self.centeredBounds(size)))
-            radiusValues.append(NSNumber(value: Double(size.height / 2)))
-            times.append(NSNumber(value: t))
-        }
-        for animation in [bounds, radius] {
-            animation.keyTimes = times
-            animation.calculationMode = .linear
-            animation.duration = sizeTiming.duration
-            animation.beginTime = convertTime(transition.reference + sizeTiming.delay, from: nil)
-            animation.fillMode = .both
-        }
-        bounds.values = boundsValues
-        radius.values = radiusValues
-        add(bounds, forKey: "bounds")
-        add(radius, forKey: "radius")
-        text.add(sizeTiming.animation("transform.scale", from: fromScale, to: target.textScale, reference: transition.reference, on: text), forKey: "scale")
+        text.add(transition.size.animation("transform.scale", from: fromScale, to: target.textScale, reference: transition.reference, on: text), forKey: "scale")
     }
 
     func grow(toHeight height: CGFloat, duration: CFTimeInterval) {
@@ -567,8 +614,62 @@ final class NameLabelLayer: CAGradientLayer {
         fade(from: current, to: 0, duration: 0.07)
         CATransaction.commit()
     }
+}
 
-    private static func centeredBounds(_ size: CGSize) -> CGRect {
+extension CALayer {
+    /// Puts the layer, its bounds centred on its position, at `target`: moved and resized
+    /// there on the transition's timings from wherever it is on screen, or at once without
+    /// one. Rounded, its ends stay semicircles throughout.
+    func place(at target: LabelGeometry, transition: LabelTransition?, rounded: Bool) {
+        let presented = presentation()
+        let fromPosition = presented?.position ?? position
+        let fromSize = presented?.bounds.size ?? bounds.size
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        position = target.center
+        bounds = Self.centeredBounds(target.size)
+        cornerRadius = rounded ? target.size.height / 2 : 0
+        CATransaction.commit()
+
+        guard let transition else {
+            ["x", "y", "bounds", "radius"].forEach { removeAnimation(forKey: $0) }
+            return
+        }
+        add(transition.x.animation("position.x", from: fromPosition.x, to: target.center.x, reference: transition.reference, on: self), forKey: "x")
+        add(transition.y.animation("position.y", from: fromPosition.y, to: target.center.y, reference: transition.reference, on: self), forKey: "y")
+
+        let sizeTiming = transition.size
+        let bounds = CAKeyframeAnimation(keyPath: "bounds")
+        let radius = CAKeyframeAnimation(keyPath: "cornerRadius")
+        var boundsValues: [NSValue] = []
+        var radiusValues: [NSNumber] = []
+        var times: [NSNumber] = []
+        for index in 0...48 {
+            let t = Double(index) / 48
+            let p = CGFloat(sizeTiming.curve.value(at: t))
+            let size = CGSize(
+                width: fromSize.width + (target.size.width - fromSize.width) * p,
+                height: fromSize.height + (target.size.height - fromSize.height) * p
+            )
+            boundsValues.append(NSValue(rect: Self.centeredBounds(size)))
+            radiusValues.append(NSNumber(value: rounded ? Double(size.height / 2) : 0))
+            times.append(NSNumber(value: t))
+        }
+        for animation in [bounds, radius] {
+            animation.keyTimes = times
+            animation.calculationMode = .linear
+            animation.duration = sizeTiming.duration
+            animation.beginTime = convertTime(transition.reference + sizeTiming.delay, from: nil)
+            animation.fillMode = .both
+        }
+        bounds.values = boundsValues
+        radius.values = radiusValues
+        add(bounds, forKey: "bounds")
+        if rounded { add(radius, forKey: "radius") } else { removeAnimation(forKey: "radius") }
+    }
+
+    fileprivate static func centeredBounds(_ size: CGSize) -> CGRect {
         CGRect(x: -size.width / 2, y: -size.height / 2, width: size.width, height: size.height)
     }
 }

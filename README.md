@@ -186,8 +186,10 @@ open "spacenamer://settings"
   to the Dock, telling it to skip the animation, and checks that it arrived. If that ever stops
   working it falls back to the Mission Control keyboard shortcuts.
 - **Mission Control names.** macOS doesn't let apps rename desktops, so SpaceNamer draws the
-  names itself, in a click-through layer exactly over the Dock's labels. It finds the labels
-  through Accessibility and mirrors the Dock's own animations as it opens, closes and expands.
+  names itself, in a click-through layer over the Dock's labels: a bar across the screen covers
+  the Dock's row of names, and every desktop's name moves along it, the current desktop and any
+  agent's state shaded in. It finds the labels through Accessibility and mirrors the Dock's own
+  animations as it opens, closes and expands.
 - **Input.** To notice switches and Mission Control as they start, SpaceNamer listens (without
   changing or blocking anything) for shortcut presses and trackpad gestures. Ordinary typing,
   meaning keys without ⌃ ⌥ ⇧ ⌘, is ignored the moment it arrives, and nothing is recorded.

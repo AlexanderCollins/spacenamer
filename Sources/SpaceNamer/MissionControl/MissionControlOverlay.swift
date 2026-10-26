@@ -1019,10 +1019,12 @@ final class MissionControlOverlay {
 
         let geometries = layout.labels.map { Self.geometry(for: $0, bar: layout.barFrame, origin: origin) }
         let statuses = spaces.map { space in space.flatMap { model.agents.status(for: $0) } }
-        // Desktops with an agent to show get a pill even without a name of their own.
+        // The band covers the Dock's names, so every desktop gets one: the Dock's own for
+        // a desktop the user hasn't named.
         let names: [String?] = spaces.indices.map { index in
             guard let space = spaces[index] else { return nil }
-            return model.store.name(for: space.key) ?? (statuses[index] != nil ? model.title(for: space) : nil)
+            let title = layout.labels[index].title
+            return model.store.name(for: space.key) ?? (title.isEmpty ? model.title(for: space) : title)
         }
         let current = spaces.map { space -> Bool in
             guard let space else { return false }
@@ -1059,7 +1061,8 @@ final class MissionControlOverlay {
                 agent: statuses[index]
             ))
         }
-        window.canvas.update(targets, transition: transition, fadeNew: fadeNew)
+        let band = targets.isEmpty ? nil : Self.band(for: layout, row: geometries, width: screen.frame.width, origin: origin)
+        window.canvas.update(targets, band: band, transition: transition, fadeNew: fadeNew)
         log.debug("render display \(layout.displayID): \(layout.labels.count) labels, \(targets.count) names, visible=\(window.isVisible), offset=\(window.canvas.presentedOffset), opacity=\(window.canvas.presentedOpacity)")
     }
 
@@ -1291,6 +1294,21 @@ final class MissionControlOverlay {
             size: CGSize(width: name.width + 22, height: name.height),
             textScale: 1
         )
+    }
+
+    /// The band the names run along: across the screen (short of the + button, where that's
+    /// in the names' row) and a little taller than the names, so it covers the Dock's.
+    static func band(for layout: SpacesBarReader.Layout, row: [LabelGeometry], width: CGFloat, origin: CGPoint) -> LabelGeometry? {
+        guard let y = row.first?.center.y, let tallest = row.map(\.size.height).max() else { return nil }
+        let height = tallest + OverlayCanvas.bandMargin
+        var right = width
+        if var add = layout.addFrame {
+            // Reported a bar-height too high while the bar shows only names, like them.
+            if add.minY < layout.barFrame.minY { add.origin.y += layout.barFrame.height }
+            add = add.offsetBy(dx: -origin.x, dy: -origin.y)
+            if add.minY < y + height / 2, add.maxY > y - height / 2 { right = min(right, add.minX - 6) }
+        }
+        return LabelGeometry(center: CGPoint(x: right / 2, y: y), size: CGSize(width: right, height: height), textScale: 1)
     }
 
     /// How wide the Dock's own name for a Space is. Under a thumbnail it isn't reported,

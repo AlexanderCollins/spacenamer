@@ -195,6 +195,11 @@ enum DebugCommands {
                 }
             }
         case "/key":
+            if query["mc"] != nil {
+                // The Mission Control shortcut, with nothing watching the Dock from here.
+                if let shortcut = SymbolicHotKeys.missionControl().last { EventSynth.press(shortcut) }
+                return
+            }
             if let code = query["code"].flatMap(UInt16.init) {
                 // e.g. code=125&control=1 for ⌃↓ (App Exposé)
                 var flags: UInt64 = 0
@@ -433,6 +438,54 @@ enum DebugCommands {
         }
         describe(AXUIElementCreateApplication(dock.processIdentifier), depth: 0)
         return lines.joined(separator: "\n")
+    }
+}
+/// Mission Control's band and names in every state, dark above light, drawn offscreen.
+@MainActor
+enum LabelPreview {
+    static func render(to path: String) {
+        _ = NSApplication.shared
+        let width: CGFloat = 1100, rowHeight: CGFloat = 48, scale: CGFloat = 2
+        let samples: [(String, Bool, DesktopAgentStatus?)] = [
+            ("wealthms", false, nil),
+            ("spacenamer", true, nil),
+            ("CRM", false, DesktopAgentStatus(state: .working)),
+            ("Woven", false, DesktopAgentStatus(state: .needsInput)),
+            ("uni", false, DesktopAgentStatus(state: .done)),
+            ("mortgage", false, DesktopAgentStatus(state: .failed)),
+            ("Personal Finance", false, DesktopAgentStatus(state: .working, progress: 0.4)),
+            ("fortniteping", true, DesktopAgentStatus(state: .working)),
+        ]
+        guard let context = CGContext(data: nil, width: Int(width * scale), height: Int(rowHeight * 2 * scale), bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
+        context.scaleBy(x: scale, y: scale)
+        for (row, appearance) in [NSAppearance(named: .aqua)!, NSAppearance(named: .darkAqua)!].enumerated() {
+            let canvas = OverlayCanvas(scale: scale)
+            canvas.resize(to: CGSize(width: width, height: rowHeight))
+            canvas.style = LabelStyle.resolve(for: appearance)
+            canvas.setSlide(offset: 0, opacity: 1)
+            // A backdrop like the Spaces bar's, so the band's edges show.
+            context.setFillColor(CGColor(gray: row == 0 ? 0.75 : 0.35, alpha: 1))
+            context.fill(CGRect(x: 0, y: CGFloat(row) * rowHeight, width: width, height: rowHeight))
+            var x: CGFloat = 20
+            var targets: [OverlayCanvas.Target] = []
+            for (index, sample) in samples.enumerated() {
+                let fit = OverlayCanvas.fit(for: sample.0, textScale: 1)
+                let geometry = LabelGeometry(center: CGPoint(x: x + fit.comfortable / 2, y: rowHeight / 2), size: CGSize(width: fit.comfortable + 12, height: 24), textScale: 1)
+                targets.append(OverlayCanvas.Target(key: "\(index)", name: sample.0, isCurrent: sample.1, geometry: geometry, agent: sample.2))
+                x += fit.comfortable + 24
+            }
+            let band = LabelGeometry(center: CGPoint(x: width / 2, y: rowHeight / 2), size: CGSize(width: width, height: 24 + OverlayCanvas.bandMargin), textScale: 1)
+            canvas.update(targets, band: band, transition: nil, fadeNew: false)
+            context.saveGState()
+            context.translateBy(x: 0, y: CGFloat(row) * rowHeight)
+            canvas.root.render(in: context)
+            context.restoreGState()
+        }
+        guard let image = context.makeImage(),
+              let destination = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL, "public.png" as CFString, 1, nil)
+        else { return }
+        CGImageDestinationAddImage(destination, image, nil)
+        CGImageDestinationFinalize(destination)
     }
 }
 #endif
