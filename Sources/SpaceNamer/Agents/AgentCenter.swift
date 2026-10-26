@@ -415,16 +415,21 @@ final class AgentCenter: ObservableObject {
         }
     }
 
-    /// Looks every couple of seconds for transcripts that don't exist yet.
+    /// Looks every couple of seconds for transcripts that don't exist yet (or no longer
+    /// do), on one timer that stops once none are missing.
     private func retryWatching() {
         guard watchRetry == nil else { return }
         let timer = Timer(timeInterval: 2, repeats: true) { [weak self] timer in
             MainActor.assumeIsolated {
                 guard let self else { return timer.invalidate() }
+                // While this timer is `watchRetry`, a watch that fails again doesn't start
+                // another one.
                 let waiting = self.sessions.filter { $0.value.transcript != nil && self.transcriptWatchers[$0.key] == nil }.map(\.key)
-                self.watchRetry = nil
                 waiting.forEach { self.watchTranscript(of: $0) }
-                if self.watchRetry == nil { timer.invalidate() } else { self.watchRetry = timer }
+                if waiting.allSatisfy({ self.transcriptWatchers[$0] != nil }) {
+                    timer.invalidate()
+                    self.watchRetry = nil
+                }
             }
         }
         RunLoop.main.add(timer, forMode: .common)
