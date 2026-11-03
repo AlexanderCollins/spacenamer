@@ -71,6 +71,27 @@ struct AgentsSettingsView: View {
             }
 
             Section {
+                Toggle("Pop up its desktop's name", isOn: $preferences.finishPopUp)
+                Toggle("Play a sound", isOn: $preferences.finishSound)
+                Picker("Sound", selection: $preferences.finishSoundName) {
+                    ForEach(AlertSound.names, id: \.self) { Text($0).tag($0) }
+                }
+                .disabled(!preferences.finishSound)
+                .onChange(of: preferences.finishSoundName) { name in AlertSound.play(name) }
+                HStack {
+                    Spacer()
+                    Button("Try It") { model.actions.previewFinishAlert() }
+                }
+            } header: {
+                Text("When an agent finishes")
+            } footer: {
+                Text("When an agent goes from working to done, its desktop's name pops up in green where the switch pill shows, and the sound plays at your alert volume. Both are also in the menu bar menu.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Section {
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: pluginInstalled ? "checkmark.circle.fill" : "puzzlepiece.extension")
                         .font(.title2)

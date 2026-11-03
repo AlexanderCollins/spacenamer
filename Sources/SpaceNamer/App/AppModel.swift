@@ -16,6 +16,8 @@ final class AppModel: ObservableObject {
         var switchStarted: (Space) -> Void = { _ in }
         var explainPermission: () -> Void = {}
         var explainMissingShortcuts: () -> Void = {}
+        /// Shows and plays what an agent finishing would, to try it out.
+        var previewFinishAlert: () -> Void = {}
     }
 
     @Published private(set) var snapshot: SpacesSnapshot = .empty

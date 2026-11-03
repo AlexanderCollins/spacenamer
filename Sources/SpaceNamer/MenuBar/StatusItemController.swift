@@ -219,6 +219,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         missionControl.state = model.preferences.showNamesInMissionControl ? .on : .off
         menu.addItem(missionControl)
 
+        let finish = NSMenuItem(title: "When an Agent Finishes", action: nil, keyEquivalent: "")
+        finish.submenu = finishMenu()
+        menu.addItem(finish)
+
         menu.addItem(.separator())
 
         let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
@@ -227,6 +231,39 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
         let quit = NSMenuItem(title: "Quit SpaceNamer", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
+    }
+
+    /// Finish alerts: whether to pop up and play a sound, and which sound.
+    private func finishMenu() -> NSMenu {
+        let preferences = model.preferences
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        let popUp = NSMenuItem(title: "Show Pop-Up", action: #selector(toggleFinishPopUp), keyEquivalent: "")
+        popUp.target = self
+        popUp.state = preferences.finishPopUp ? .on : .off
+        menu.addItem(popUp)
+
+        let sound = NSMenuItem(title: "Play Sound", action: #selector(toggleFinishSound), keyEquivalent: "")
+        sound.target = self
+        sound.state = preferences.finishSound ? .on : .off
+        menu.addItem(sound)
+
+        menu.addItem(.separator())
+        menu.addItem(Self.header("Sound"))
+        for name in AlertSound.names {
+            let item = NSMenuItem(title: name, action: #selector(chooseFinishSound(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = name
+            item.state = name == preferences.finishSoundName ? .on : .off
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+        let tryIt = NSMenuItem(title: "Try It", action: #selector(previewFinishAlert), keyEquivalent: "")
+        tryIt.target = self
+        menu.addItem(tryIt)
+        return menu
     }
 
     private func item(for space: Space, isCurrent: Bool) -> NSMenuItem {
@@ -297,6 +334,27 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     @objc private func toggleMissionControl() {
         model.preferences.showNamesInMissionControl.toggle()
+    }
+
+    @objc private func toggleFinishPopUp() {
+        model.preferences.finishPopUp.toggle()
+    }
+
+    @objc private func toggleFinishSound() {
+        model.preferences.finishSound.toggle()
+    }
+
+    /// Choosing a sound means wanting it: it plays, and sounds are turned on.
+    @objc private func chooseFinishSound(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        model.preferences.finishSoundName = name
+        model.preferences.finishSound = true
+        AlertSound.play(name)
+    }
+
+    @objc private func previewFinishAlert() {
+        // After the menu has gone, so the pop-up isn't hidden behind it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [model] in model.actions.previewFinishAlert() }
     }
 
     @objc private func openSettings() {

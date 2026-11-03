@@ -30,8 +30,8 @@ is injected into other apps, and no system files are modified.
 - **Scriptable.** A `spacenamer://` URL scheme for Shortcuts, Raycast, Alfred and shell scripts.
 - **Coding agents.** Each Claude Code session (or any agent, through MCP) shows on the desktop
   its terminal is on: working, needs you, done or failed. Desktops take their chat's title as a
-  name (and `/rename` renames the desktop), and new chats take their desktop's. See
-  [Coding agents](#coding-agents).
+  name (and `/rename` renames the desktop), and new chats take their desktop's. Optionally, a
+  green pop-up and a sound tell you when one finishes. See [Coding agents](#coding-agents).
 - **Update notice.** When there are newer changes on GitHub, a small green arrow appears next to
   the name in the menu bar, and the menu lists what's new (each change opens on GitHub) with
   **Update SpaceNamer…** to pull and rebuild.
@@ -120,6 +120,11 @@ you gave it), and follows it when it changes. Only names that fit a label are us
 straight away, even one you'd named; Claude Code's own titles never replace a name you gave a
 desktop. A new chat on a desktop you named takes the desktop's name. Both directions can be
 turned off in **Settings → Agents**.
+
+**Finish alerts.** When an agent goes from working to done, SpaceNamer can tell you: its
+desktop's name pops up where the switch pill shows, fills with green and checks itself off, and
+a sound of your choice plays at your alert volume. Both are off until you turn them on, under
+**When an Agent Finishes** in the menu (or **Settings → Agents**), where **Try It** shows you.
 
 **Which desktop.** In iTerm2 and Terminal, SpaceNamer asks the terminal which window shows each
 agent's session, so an agent belongs to the desktop that window is on, and moves with it (macOS

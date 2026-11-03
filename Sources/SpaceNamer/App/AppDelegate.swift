@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var switcher: SwitcherController!
     private var hud: HUDController!
     private var missionControl: MissionControlOverlay!
+    private var finishAlerts: FinishAlerts!
     private let predictor = SwitchPredictor()
     private let input = InputMonitor()
     private var cancellables = Set<AnyCancellable>()
@@ -34,13 +35,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showHUD: { [weak self] space, early in self?.showHUD(for: space, early: early) },
             switchStarted: { [weak self] space in self?.missionControl.switchStarted(to: space) },
             explainPermission: { [weak self] in self?.explainPermission() },
-            explainMissingShortcuts: { [weak self] in self?.explainMissingShortcuts() }
+            explainMissingShortcuts: { [weak self] in self?.explainMissingShortcuts() },
+            previewFinishAlert: { [weak self] in self?.finishAlerts.preview() }
         )
         model.start()
         statusItem = StatusItemController(model: model)
         missionControl = MissionControlOverlay(model: model)
         missionControl.onOpening = { [weak self] in self?.hud.dismiss() }
         missionControl.start()
+        finishAlerts = FinishAlerts(model: model, hud: hud) { [weak self] in self?.missionControl.isMissionControlUp ?? false }
+        model.agents.finished
+            .sink { [weak self] session in self?.finishAlerts.agentFinished(session) }
+            .store(in: &cancellables)
 
         predictor.onMove = { [weak self] move in self?.model.predictSwitch(move) }
         predictor.onHeading = { [weak self] move in self?.model.swipeHeading(move) }

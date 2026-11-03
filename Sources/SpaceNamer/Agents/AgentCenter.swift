@@ -23,6 +23,8 @@ final class AgentCenter: ObservableObject {
     @Published private(set) var sessions: [Int32: AgentSession] = [:]
     /// What each desktop shows: its most urgent agent.
     @Published private(set) var statusBySpace: [SpaceKey: DesktopAgentStatus] = [:]
+    /// An agent that was working (or waiting on the user) has just finished.
+    let finished = PassthroughSubject<AgentSession, Never>()
 
     /// How long a result stays once its desktop is on screen.
     private static let seenAfter: TimeInterval = 2
@@ -158,6 +160,7 @@ final class AgentCenter: ObservableObject {
         }
 
         var session = sessions[pid] ?? AgentSession(pid: pid, source: report.source)
+        let before = session.state
         if sessions[pid] == nil {
             guard ProcessTree.isAlive(pid) else { return AgentReply() }
             watchExit(of: pid)
@@ -199,6 +202,7 @@ final class AgentCenter: ObservableObject {
         }
         publish()
         noteVisibility()
+        noteFinish(of: pid, from: before)
         return reply
     }
 
@@ -242,6 +246,12 @@ final class AgentCenter: ObservableObject {
             let spaces = model.spaces(withWindowsOf: terminal.processIdentifier)
             if spaces.count == 1 { session.space = spaces.first }
         }
+    }
+
+    /// Says so when an agent goes from working (or waiting on the user) to done.
+    private func noteFinish(of pid: Int32, from before: AgentState) {
+        guard let session = sessions[pid], session.state == .done, before == .working || before == .needsInput else { return }
+        finished.send(session)
     }
 
     private func remove(_ pid: Int32) {
@@ -443,6 +453,7 @@ final class AgentCenter: ObservableObject {
         guard let space = model.snapshot.space(atPosition: position) else { return }
         let pid = Int32(-position)
         var session = sessions[pid] ?? AgentSession(pid: pid, source: "debug")
+        let before = session.state
         session.space = space.key
         session.apply(AgentReport(event: .status, source: "debug", transcript: transcript, title: title, state: state, note: note, progress: progress))
         sessions[pid] = session
@@ -451,6 +462,7 @@ final class AgentCenter: ObservableObject {
         watchTranscript(of: pid)
         publish()
         noteVisibility()
+        noteFinish(of: pid, from: before)
     }
 
     /// Removes pretend agents, and the names their chats gave desktops.

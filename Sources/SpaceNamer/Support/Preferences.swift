@@ -79,6 +79,9 @@ final class Preferences: ObservableObject {
         static let showAgentStatus = "ShowAgentStatus"
         static let nameDesktopsFromChats = "NameDesktopsFromChats"
         static let nameChatsFromDesktops = "NameChatsFromDesktops"
+        static let finishPopUp = "FinishAlert.PopUp"
+        static let finishSound = "FinishAlert.Sound"
+        static let finishSoundName = "FinishAlert.SoundName"
     }
 
     static let defaultSwitcherHotKey = HotKey(keyCode: UInt32(kVK_Space), carbonModifiers: UInt32(controlKey | optionKey))
@@ -103,6 +106,11 @@ final class Preferences: ObservableObject {
     @Published var showAgentStatus: Bool { didSet { save(showAgentStatus, oldValue, Key.showAgentStatus) } }
     @Published var nameDesktopsFromChats: Bool { didSet { save(nameDesktopsFromChats, oldValue, Key.nameDesktopsFromChats) } }
     @Published var nameChatsFromDesktops: Bool { didSet { save(nameChatsFromDesktops, oldValue, Key.nameChatsFromDesktops) } }
+    /// When an agent finishes: its desktop's name pops up, green, where the switch pill shows.
+    @Published var finishPopUp: Bool { didSet { save(finishPopUp, oldValue, Key.finishPopUp) } }
+    /// When an agent finishes: `finishSoundName` plays.
+    @Published var finishSound: Bool { didSet { save(finishSound, oldValue, Key.finishSound) } }
+    @Published var finishSoundName: String { didSet { save(finishSoundName, oldValue, Key.finishSoundName) } }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -123,6 +131,9 @@ final class Preferences: ObservableObject {
         showAgentStatus = defaults.object(forKey: Key.showAgentStatus) as? Bool ?? true
         nameDesktopsFromChats = defaults.object(forKey: Key.nameDesktopsFromChats) as? Bool ?? true
         nameChatsFromDesktops = defaults.object(forKey: Key.nameChatsFromDesktops) as? Bool ?? true
+        finishPopUp = defaults.object(forKey: Key.finishPopUp) as? Bool ?? false
+        finishSound = defaults.object(forKey: Key.finishSound) as? Bool ?? false
+        finishSoundName = defaults.string(forKey: Key.finishSoundName) ?? AlertSound.defaultName
     }
 
     /// True exactly once, on the very first launch.
